@@ -25,7 +25,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 复制应用文件
-COPY deepseek.py .
+COPY ema_strategy.py .
 
 # 运行 Python 脚本
-CMD ["python", "deepseek.py"]
+CMD ["python", "ema_strategy.py"]
