@@ -32,7 +32,7 @@ TRADE_CONFIG = {
     'amount': 0.01,  # 交易数量 (BTC)
     'leverage': 10,  # 杠杆倍数
     'timeframe': '15m',  # 使用15分钟K线
-    'test_mode': False,  # 测试模式
+    'test_mode': True,  # 测试模式
 }
 
 # 全局变量存储历史数据

@@ -25,6 +25,10 @@ exchange = ccxt.okx({
     'apiKey': os.getenv('OKX_API_KEY'),
     'secret': os.getenv('OKX_SECRET'),
     'password': os.getenv('OKX_PASSWORD'),  # OKX需要交易密码
+    'proxies': {
+        'http': 'http://127.0.0.1:7890',
+        'https': 'http://127.0.0.1:7890',
+    },
 })
 
 # 交易参数配置 - 结合两个版本的优点
@@ -33,7 +37,7 @@ TRADE_CONFIG = {
     'amount': 0.01,  # 交易数量 (BTC)
     'leverage': 10,  # 杠杆倍数
     'timeframe': '15m',  # 使用15分钟K线
-    'test_mode': False,  # 测试模式
+    'test_mode': True,  # 测试模式
     'data_points': 96,  # 24小时数据（96根15分钟K线）
     'analysis_periods': {
         'short_term': 20,  # 短期均线
