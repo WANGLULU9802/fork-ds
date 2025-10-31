@@ -1,4 +1,5 @@
 import os
+import platform
 import time
 import schedule
 from openai import OpenAI
@@ -16,11 +17,31 @@ deepseek_client = OpenAI(
     base_url="https://api.deepseek.com"
 )
 
-exchange = ccxt.binance({
+
+# 判断是否为 Windows 系统
+is_windows = platform.system() == 'Windows'
+
+# 配置交易所参数
+config = {
     'options': {'defaultType': 'future'},
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_SECRET'),
-})
+}
+
+# 如果是 Windows 系统，添加代理配置
+if is_windows:
+    # 方法1：使用 proxies 参数（推荐）
+    config['proxies'] = {
+        'http': 'http://127.0.0.1:7890',  # 替换为你的代理地址
+        'https': 'http://127.0.0.1:7890',  # 替换为你的代理地址
+    }
+
+    # 或者方法2：使用单独的代理参数
+    # config['httpProxy'] = 'http://127.0.0.1:7890'
+    # config['httpsProxy'] = 'http://127.0.0.1:7890'
+
+# 创建交易所实例
+exchange = ccxt.binance(config)
 
 # 交易参数配置
 TRADE_CONFIG = {
@@ -28,7 +49,7 @@ TRADE_CONFIG = {
     'amount': 0.001,  # 交易数量 (BTC)
     'leverage': 10,  # 杠杆倍数
     'timeframe': '15m',  # 使用1小时K线，可改为15m
-    'test_mode': False,  # 测试模式
+    'test_mode': True,  # 测试模式
 }
 
 # 全局变量存储历史数据
