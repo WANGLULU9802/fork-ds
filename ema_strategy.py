@@ -81,7 +81,7 @@ def setup_exchange():
 
         return True
     except Exception as e:
-        logging.info(f"交易所设置失败: {e}")
+        logging.exception(f"交易所设置失败: {e}")
         return False
 
 
@@ -261,7 +261,7 @@ def analyze_with_deepseek(price_data):
         return signal_data
 
     except Exception as e:
-        logging.info(f"DeepSeek分析失败: {e}")
+        logging.exception(f"DeepSeek分析失败: {e}")
         return None
 
 
