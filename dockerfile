@@ -20,6 +20,7 @@ RUN echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian/ buster main contrib no
 
 # 复制 requirements.txt（如果有依赖包的话）
 COPY requirements.txt .
+COPY .env .
 
 # 安装 Python 依赖
 RUN pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
