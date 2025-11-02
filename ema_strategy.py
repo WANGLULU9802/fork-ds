@@ -261,6 +261,7 @@ def analyze_with_deepseek(price_data):
         return signal_data
 
     except Exception as e:
+        logging.error(f"DeepSeek分析失败，原始文本: {result}")
         logging.exception(f"DeepSeek分析失败: {e}")
         return None
 
