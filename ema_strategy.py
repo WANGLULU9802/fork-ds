@@ -9,6 +9,8 @@ from datetime import datetime
 import json
 from dotenv import load_dotenv
 import logging
+import re
+
 
 # 配置日志
 logging.basicConfig(
@@ -54,8 +56,9 @@ exchange = ccxt.binance(config)
 
 # 交易参数配置
 TRADE_CONFIG = {
-    'symbol': 'BTC/USDT',
-    'amount': 0.001,  # 交易数量 (BTC)
+    'symbol': 'SOL/USDT',
+    'base_currency': 'SOL',
+    'amount': 0.001,  # 交易数量 (本位币)
     'leverage': 10,  # 杠杆倍数
     'timeframe': '15m',  # 使用1小时K线，可改为15m
     'test_mode': True,  # 测试模式
@@ -85,8 +88,8 @@ def setup_exchange():
         return False
 
 
-def get_btc_ohlcv():
-    """获取BTC/USDT的K线数据（1小时或15分钟）"""
+def get_ohlcv():
+    """获取K线数据（1小时或15分钟）"""
     try:
         # 获取最近10根K线
         ohlcv = exchange.fetch_ohlcv(TRADE_CONFIG['symbol'], TRADE_CONFIG['timeframe'], limit=10)
@@ -119,7 +122,7 @@ def get_current_position():
         positions = exchange.fetch_positions([TRADE_CONFIG['symbol']])
 
         # 标准化配置的交易对符号用于比较
-        config_symbol_normalized = 'BTC/USDT:USDT'
+        config_symbol_normalized = f"{TRADE_CONFIG['symbol']}:USDT"
 
         for pos in positions:
 
@@ -209,7 +212,7 @@ def analyze_with_deepseek(price_data):
     - 时间: {price_data['timestamp']}
     - 本K线最高: ${price_data['high']:,.2f}
     - 本K线最低: ${price_data['low']:,.2f}
-    - 本K线成交量: {price_data['volume']:.2f} BTC
+    - 本K线成交量: {price_data['volume']:.2f} {TRADE_CONFIG['base_currency']}
     - 价格变化: {price_data['price_change']:+.2f}%
     - 当前持仓: {position_text}
 
@@ -247,6 +250,9 @@ def analyze_with_deepseek(price_data):
         end_idx = result.rfind('}') + 1
         if start_idx != -1 and end_idx != 0:
             json_str = result[start_idx:end_idx]
+              # 🔧 关键修复：移除数字中的逗号
+            json_str = re.sub(r':\s*(\d{1,3}(,\d{3})+)', lambda m: ': ' + m.group(1).replace(',', ''), json_str)
+        
             signal_data = json.loads(json_str)
         else:
             logging.info(f"无法解析JSON: {result}")
@@ -338,11 +344,11 @@ def trading_bot():
     logging.info("=" * 60)
 
     # 1. 获取K线数据
-    price_data = get_btc_ohlcv()
+    price_data = get_ohlcv()
     if not price_data:
         return
 
-    logging.info(f"BTC当前价格: ${price_data['price']:,.2f}")
+    logging.info(f"{TRADE_CONFIG['base_currency']}当前价格: ${price_data['price']:,.2f}")
     logging.info(f"数据周期: {TRADE_CONFIG['timeframe']}")
     logging.info(f"价格变化: {price_data['price_change']:+.2f}%")
 
@@ -357,7 +363,7 @@ def trading_bot():
 
 def main():
     """主函数"""
-    logging.info("BTC/USDT 自动交易机器人启动成功！")
+    logging.info(f"{TRADE_CONFIG['symbol']}自动交易机器人启动成功！")
 
     if TRADE_CONFIG['test_mode']:
         logging.info("当前为模拟模式，不会真实下单")
