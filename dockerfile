@@ -17,9 +17,6 @@ RUN echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian/ bookworm main contrib 
     build-essential \
 && rm -rf /var/lib/apt/lists/*
 
-# 创建日志目录并设置软链接
-RUN ln -sf /dev/stdout /app/app.log
-
 # 复制 requirements.txt（如果有依赖包的话）
 COPY requirements.txt .
 COPY .env .
@@ -31,4 +28,4 @@ RUN pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 COPY ema_strategy.py .
 
 # 运行 Python 脚本
-CMD ["python", "-u", "ema_strategy.py"]
+CMD python -u ema_strategy.py & sleep 5 && tail -f /app/app.log
