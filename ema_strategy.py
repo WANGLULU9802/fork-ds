@@ -60,7 +60,8 @@ TRADE_CONFIG = {
     'base_currency': 'SOL',
     'amount': 0.001,  # 交易数量 (本位币)
     'leverage': 10,  # 杠杆倍数
-    'timeframe': '15m',  # 使用1小时K线，可改为15m
+    'timeframe': '5m', 
+    'high_timeframe': '15m',
     'test_mode': True,  # 测试模式
 }
 
@@ -88,11 +89,11 @@ def setup_exchange():
         return False
 
 
-def get_ohlcv():
+def get_ohlcv(timeframe):
     """获取K线数据（1小时或15分钟）"""
     try:
         # 获取最近10根K线
-        ohlcv = exchange.fetch_ohlcv(TRADE_CONFIG['symbol'], TRADE_CONFIG['timeframe'], limit=10)
+        ohlcv = exchange.fetch_ohlcv(TRADE_CONFIG['symbol'], timeframe, limit=10)
 
         # 转换为DataFrame
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -107,7 +108,7 @@ def get_ohlcv():
             'high': current_data['high'],
             'low': current_data['low'],
             'volume': current_data['volume'],
-            'timeframe': TRADE_CONFIG['timeframe'],
+            'timeframe': timeframe,
             'price_change': ((current_data['close'] - previous_data['close']) / previous_data['close']) * 100,
             'kline_data': df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].to_dict('records')
         }
@@ -163,7 +164,7 @@ def get_current_position():
         return None
 
 
-def analyze_with_deepseek(price_data):
+def analyze_with_deepseek(price_data, high_price_data):
     """使用DeepSeek分析市场并生成交易信号"""
 
     # 添加当前价格到历史记录
@@ -172,11 +173,19 @@ def analyze_with_deepseek(price_data):
         price_history.pop(0)
 
     # 构建K线数据文本
-    kline_text = f"【最近10根{TRADE_CONFIG['timeframe']}K线数据】\n"
+    kline_text = f"【由远到近的10根{TRADE_CONFIG['timeframe']}K线数据】\n"
     for i, kline in enumerate(price_data['kline_data']):
         trend = "阳线" if kline['close'] > kline['open'] else "阴线"
         change = ((kline['close'] - kline['open']) / kline['open']) * 100
         kline_text += f"K线{i + 1}: {trend} O:{kline['open']:.2f} C:{kline['close']:.2f} H:{kline['high']:.2f} L:{kline['low']:.2f} V:{kline['volume']:.2f} 涨跌:{change:+.2f}%\n"
+
+    kline_text += f"【由远到近的10根{TRADE_CONFIG['high_timeframe']}K线数据】\n"
+    for i, kline in enumerate(high_price_data['kline_data']):
+        trend = "阳线" if kline['close'] > kline['open'] else "阴线"
+        change = ((kline['close'] - kline['open']) / kline['open']) * 100
+        kline_text += f"K线{i + 1}: {trend} O:{kline['open']:.2f} C:{kline['close']:.2f} H:{kline['high']:.2f} L:{kline['low']:.2f} V:{kline['volume']:.2f} 涨跌:{change:+.2f}%\n"
+
+
 
     # 构建技术指标文本
     if len(price_history) >= 5:
@@ -238,7 +247,7 @@ def analyze_with_deepseek(price_data):
             model="deepseek-chat",
             messages=[
                 {"role": "system",
-                 "content": f"您是一位急需资金为母亲治疗癌症的交易员，你现在需要从加密货币交易市场赚取足够的金额治疗你的母亲，专注于{TRADE_CONFIG['timeframe']}周期趋势分析。请结合K线形态和技术指标做出判断。"},
+                 "content": f"您是一位急需资金为母亲治疗癌症的交易员，你现在非常非常非常需要从加密货币交易市场赚取足够的金额治疗你的母亲，专注于{TRADE_CONFIG['timeframe']}周期趋势分析。请结合K线形态和技术指标做出判断。"},
                 {"role": "user", "content": prompt}
             ],
             stream=False
@@ -250,7 +259,7 @@ def analyze_with_deepseek(price_data):
         end_idx = result.rfind('}') + 1
         if start_idx != -1 and end_idx != 0:
             json_str = result[start_idx:end_idx]
-              # 🔧 关键修复：移除数字中的逗号
+            # 🔧 关键修复：移除数字中的逗号
             json_str = re.sub(r':\s*(\d{1,3}(,\d{3})+)', lambda m: ': ' + m.group(1).replace(',', ''), json_str)
         
             signal_data = json.loads(json_str)
@@ -278,6 +287,7 @@ def execute_trade(signal_data, price_data):
 
     logging.info(f"交易信号: {signal_data['signal']}")
     logging.info(f"信心程度: {signal_data['confidence']}")
+    logging.info(f"止损价格: {signal_data['stop_loss']}")
     logging.info(f"理由: {signal_data['reason']}")
     logging.info(f"当前持仓: {current_position}")
 
@@ -344,7 +354,9 @@ def trading_bot():
     logging.info("=" * 60)
 
     # 1. 获取K线数据
-    price_data = get_ohlcv()
+    price_data = get_ohlcv(TRADE_CONFIG['timeframe'])
+    high_price_data = get_ohlcv(TRADE_CONFIG['high_timeframe'])
+
     if not price_data:
         return
 
@@ -353,7 +365,7 @@ def trading_bot():
     logging.info(f"价格变化: {price_data['price_change']:+.2f}%")
 
     # 2. 使用DeepSeek分析
-    signal_data = analyze_with_deepseek(price_data)
+    signal_data = analyze_with_deepseek(price_data, high_price_data)
     if not signal_data:
         return
 
@@ -387,6 +399,10 @@ def main():
         # 每15分钟执行一次
         schedule.every(15).minutes.do(trading_bot)
         logging.info("执行频率: 每15分钟一次")
+    elif TRADE_CONFIG['timeframe'] == '5m':
+        # 每15分钟执行一次
+        schedule.every(5).minutes.do(trading_bot)
+        logging.info("执行频率: 每5分钟一次")
     else:
         # 默认1小时
         schedule.every().hour.at(":01").do(trading_bot)
