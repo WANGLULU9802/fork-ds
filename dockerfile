@@ -9,14 +9,16 @@ ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # 修改 APT 下载源为清华源并安装基础的编译工具
-RUN echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian/ buster main contrib non-free" > /etc/apt/sources.list \
-&& echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian/ buster-updates main contrib non-free" >> /etc/apt/sources.list \
-&& echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian/ buster-backports main contrib non-free" >> /etc/apt/sources.list \
-&& echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian-security buster/updates main contrib non-free" >> /etc/apt/sources.list \
+RUN echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian/ bookworm main contrib non-free" > /etc/apt/sources.list \
+&& echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian/ bookworm-updates main contrib non-free" >> /etc/apt/sources.list \
+&& echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main contrib non-free" >> /etc/apt/sources.list \
 && apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     build-essential \
-    &
+&& rm -rf /var/lib/apt/lists/*
+
+# 创建日志目录并设置软链接
+RUN ln -sf /dev/stdout /app/app.log
 
 # 复制 requirements.txt（如果有依赖包的话）
 COPY requirements.txt .
@@ -29,4 +31,4 @@ RUN pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 COPY ema_strategy.py .
 
 # 运行 Python 脚本
-CMD ["python", "ema_strategy.py"]
+CMD ["python", "-u", "ema_strategy.py"]
