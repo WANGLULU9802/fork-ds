@@ -18,7 +18,7 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # 创建日志目录
-LOG_DIR="$(pwd)/logs"
+LOG_DIR="$(pwd)"
 if [ ! -d "$LOG_DIR" ]; then
     echo -e "${YELLOW}创建日志目录: ${LOG_DIR}${NC}"
     mkdir -p "$LOG_DIR"
@@ -50,7 +50,7 @@ echo -e "${GREEN}启动 Docker 容器...${NC}"
 docker run -d \
     --name ${CONTAINER_NAME} \
     --restart unless-stopped \
-    -v ${LOG_DIR}:/app/logs \
+    -v ${LOG_DIR}:/app \
     ${IMAGE_NAME}:${IMAGE_TAG}
 
 # 检查容器是否启动成功
