@@ -10,14 +10,13 @@ import json
 from dotenv import load_dotenv
 import logging
 import re
+from logger_config import setup_logging
 
-
-# 配置日志
-logging.basicConfig(
-    filename='app.log',  # 日志文件名
-    level=logging.INFO,  # 日志级别
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    encoding='utf-8'  # 支持中文
+# 设置日志系统 - 支持同时输出到控制台和文件
+logger = setup_logging(
+    log_filename='app.log',
+    log_level=logging.INFO,
+    name='ema_strategy'
 )
 
 load_dotenv()
@@ -47,9 +46,6 @@ if is_windows:
         'https': 'http://127.0.0.1:7890',  # 替换为你的代理地址
     }
 
-    # 或者方法2：使用单独的代理参数
-    # config['httpProxy'] = 'http://127.0.0.1:7890'
-    # config['httpsProxy'] = 'http://127.0.0.1:7890'
 
 # 创建交易所实例
 exchange = ccxt.binance(config)
@@ -60,7 +56,7 @@ TRADE_CONFIG = {
     'base_currency': 'SOL',
     'amount': 0.001,  # 交易数量 (本位币)
     'leverage': 10,  # 杠杆倍数
-    'timeframe': '5m', 
+    'timeframe': '15m',
     'high_timeframe': '15m',
     'test_mode': True,  # 测试模式
 }
@@ -71,29 +67,208 @@ signal_history = []
 position = None
 
 
+def calculate_ema(prices, period):
+    """
+    计算EMA指数移动平均线
+
+    Args:
+        prices: 价格列表
+        period: EMA周期
+
+    Returns:
+        float: EMA值
+    """
+    if len(prices) < period:
+        return None
+
+    # 计算SMA作为初始EMA
+    initial_sma = sum(prices[:period]) / period
+
+    # 计算平滑系数
+    multiplier = 2 / (period + 1)
+
+    # 计算EMA
+    ema = initial_sma
+    for price in prices[period:]:
+        ema = (price * multiplier) + (ema * (1 - multiplier))
+
+    return ema
+
+
+def get_technical_indicators(price_data, calculate_historical=False):
+    """
+    计算技术指标（EMA21, EMA50）
+
+    Args:
+        price_data: 当前价格数据或历史价格列表
+        calculate_historical: 是否计算历史K线的EMA指标
+
+    Returns:
+        dict or list: 技术指标数据
+    """
+    indicators = {}
+
+    if calculate_historical:
+        # 计算历史K线的EMA指标
+        historical_indicators = []
+
+        # 获取所有历史价格
+        all_prices = [data['price'] for data in price_history]
+        logger.info(f"计算历史指标，价格数据数量: {len(all_prices)}")
+
+        if len(all_prices) >= 50:
+            # 为每根K线计算EMA指标
+            for i in range(len(price_history)):
+                if i < 49:  # 前49根K线数据不足以计算EMA50
+                    historical_indicators.append({
+                        'ema21': None,
+                        'ema50': None,
+                        'price_vs_ema21': None,
+                        'price_vs_ema50': None,
+                        'ema21_vs_ema50': None
+                    })
+                else:
+                    # 获取到当前K线为止的价格数据
+                    prices_so_far = all_prices[:i+1]
+                    current_price = price_history[i]['price']
+
+                    indicator = {}
+
+                    # 计算EMA21
+                    ema21 = calculate_ema(prices_so_far, 21)
+                    if ema21:
+                        indicator['ema21'] = ema21
+                        indicator['price_vs_ema21'] = ((current_price - ema21) / ema21) * 100
+                    else:
+                        indicator['ema21'] = None
+                        indicator['price_vs_ema21'] = None
+
+                    # 计算EMA50
+                    ema50 = calculate_ema(prices_so_far, 50)
+                    if ema50:
+                        indicator['ema50'] = ema50
+                        indicator['price_vs_ema50'] = ((current_price - ema50) / ema50) * 100
+                    else:
+                        indicator['ema50'] = None
+                        indicator['price_vs_ema50'] = None
+
+                    # 计算EMA21和EMA50的相对位置
+                    if ema21 and ema50:
+                        indicator['ema21_vs_ema50'] = ((ema21 - ema50) / ema50) * 100
+                    else:
+                        indicator['ema21_vs_ema50'] = None
+
+                    historical_indicators.append(indicator)
+
+        return historical_indicators
+
+    else:
+        # 原有的当前价格指标计算逻辑
+        closes = [data['price'] for data in price_history]
+
+        if len(closes) >= 50:  # 需要足够的数据计算EMA50
+            current_price = price_data['price']
+
+            # 计算EMA21
+            ema21 = calculate_ema(closes, 21)
+            if ema21:
+                indicators['ema21'] = ema21
+                indicators['price_vs_ema21'] = ((current_price - ema21) / ema21) * 100
+
+            # 计算EMA50
+            ema50 = calculate_ema(closes, 50)
+            if ema50:
+                indicators['ema50'] = ema50
+                indicators['price_vs_ema50'] = ((current_price - ema50) / ema50) * 100
+
+            # 计算EMA21和EMA50的相对位置
+            if ema21 and ema50:
+                indicators['ema21_vs_ema50'] = ((ema21 - ema50) / ema50) * 100
+
+        return indicators
+
+
+def initialize_historical_data():
+    """初始化历史数据"""
+    global price_history
+
+    try:
+        # 获取60根K线作为初始历史数据
+        logger.info("开始初始化历史数据...")
+        initial_data = get_ohlcv(TRADE_CONFIG['timeframe'], initialize=True)
+
+        if not initial_data or 'historical_prices' not in initial_data:
+            logger.error("获取初始历史数据失败")
+            return False
+
+        # 构建历史数据列表
+        price_history = []
+        historical_prices = initial_data['historical_prices']
+
+        for i, price in enumerate(historical_prices):
+            price_point = {
+                'price': price,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'high': 0,  # 初始化时不保留详细K线数据
+                'low': 0,
+                'volume': 0,
+                'timeframe': TRADE_CONFIG['timeframe'],
+                'price_change': 0,
+                'kline_data': []
+            }
+            price_history.append(price_point)
+
+        logger.info(f"成功初始化{len(price_history)}个历史数据点")
+        return True
+
+    except Exception as e:
+        logger.exception(f"初始化历史数据失败: {e}")
+        return False
+
+
 def setup_exchange():
     """设置交易所参数"""
     try:
         # 设置杠杆
         exchange.set_leverage(TRADE_CONFIG['leverage'], TRADE_CONFIG['symbol'])
-        logging.info(f"设置杠杆倍数: {TRADE_CONFIG['leverage']}x")
+        logger.info(f"设置杠杆倍数: {TRADE_CONFIG['leverage']}x")
 
         # 获取余额
         balance = exchange.fetch_balance()
         usdt_balance = balance['USDT']['free']
-        logging.info(f"当前USDT余额: {usdt_balance:.2f}")
+        logger.info(f"当前USDT余额: {usdt_balance:.2f}")
 
         return True
     except Exception as e:
-        logging.exception(f"交易所设置失败: {e}")
+        logger.exception(f"交易所设置失败: {e}")
         return False
 
 
-def get_ohlcv(timeframe):
-    """获取K线数据（1小时或15分钟）"""
+def get_ohlcv(timeframe, initialize=False):
+    """获取K线数据
+
+    Args:
+        timeframe: 时间周期
+        initialize: 是否为初始化模式（获取更多历史数据）
+    """
     try:
-        # 获取最近10根K线
-        ohlcv = exchange.fetch_ohlcv(TRADE_CONFIG['symbol'], timeframe, limit=10)
+        # 根据是否为初始化模式决定获取的K线数量
+        if initialize:
+            limit = 60  # 初始化时获取60根K线确保足够计算EMA
+        else:
+            limit = 10  # 正常运行时获取10根K线
+
+        # 添加网络请求重试机制
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                ohlcv = exchange.fetch_ohlcv(TRADE_CONFIG['symbol'], timeframe, limit=limit)
+                break  # 成功获取数据，跳出重试循环
+            except Exception as network_error:
+                if attempt == max_retries - 1:  # 最后一次重试
+                    raise network_error
+                logger.warning(f"网络请求失败，第{attempt + 1}次重试: {network_error}")
+                time.sleep(2 * (attempt + 1))  # 递增延迟
 
         # 转换为DataFrame
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -102,7 +277,7 @@ def get_ohlcv(timeframe):
         current_data = df.iloc[-1]
         previous_data = df.iloc[-2] if len(df) > 1 else current_data
 
-        return {
+        result = {
             'price': current_data['close'],
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'high': current_data['high'],
@@ -112,8 +287,16 @@ def get_ohlcv(timeframe):
             'price_change': ((current_data['close'] - previous_data['close']) / previous_data['close']) * 100,
             'kline_data': df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].to_dict('records')
         }
+
+        # 如果是初始化模式，添加所有历史价格数据
+        if initialize:
+            # 修复：使用 DataFrame 的 close 列，而不是 itertuples()
+            result['historical_prices'] = df['close'].tolist()
+            logger.info(f"初始化模式：获取了{len(result['historical_prices'])}根{timeframe}K线历史数据")
+
+        return result
     except Exception as e:
-        logging.info(f"获取K线数据失败: {e}")
+        logger.exception(f"获取K线数据失败: {e}")
         return None
 
 
@@ -141,7 +324,7 @@ def get_current_position():
                     else:
                         position_amt = contracts
 
-                logging.info(f"调试 - 持仓量: {position_amt}")
+                logger.info(f"调试 - 持仓量: {position_amt}")
 
                 if position_amt != 0:  # 有持仓
                     side = 'long' if position_amt > 0 else 'short'
@@ -154,11 +337,11 @@ def get_current_position():
                         'symbol': pos['symbol']  # 返回实际的symbol用于调试
                     }
 
-        logging.info("调试 - 未找到有效持仓")
+        logger.info("调试 - 未找到有效持仓")
         return None
 
     except Exception as e:
-        logging.info(f"获取持仓失败: {e}")
+        logger.info(f"获取持仓失败: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -167,36 +350,56 @@ def get_current_position():
 def analyze_with_deepseek(price_data, high_price_data):
     """使用DeepSeek分析市场并生成交易信号"""
 
-    # 添加当前价格到历史记录
-    price_history.append(price_data)
-    if len(price_history) > 20:  # 保留更多历史数据用于长周期分析
-        price_history.pop(0)
+    # 更新历史数据（移除最旧的数据，添加最新的数据）
+    if price_history:
+        price_history.pop(0)  # 移除最旧的数据
+        price_history.append(price_data)  # 添加最新数据
 
-    # 构建K线数据文本
-    kline_text = f"【由远到近的10根{TRADE_CONFIG['timeframe']}K线数据】\n"
-    for i, kline in enumerate(price_data['kline_data']):
-        trend = "阳线" if kline['close'] > kline['open'] else "阴线"
-        change = ((kline['close'] - kline['open']) / kline['open']) * 100
-        kline_text += f"K线{i + 1}: {trend} O:{kline['open']:.2f} C:{kline['close']:.2f} H:{kline['high']:.2f} L:{kline['low']:.2f} V:{kline['volume']:.2f} 涨跌:{change:+.2f}%\n"
+    # 计算历史K线的EMA指标
+    historical_indicators = get_technical_indicators(None, calculate_historical=True)
 
-    kline_text += f"【由远到近的10根{TRADE_CONFIG['high_timeframe']}K线数据】\n"
-    for i, kline in enumerate(high_price_data['kline_data']):
-        trend = "阳线" if kline['close'] > kline['open'] else "阴线"
-        change = ((kline['close'] - kline['open']) / kline['open']) * 100
-        kline_text += f"K线{i + 1}: {trend} O:{kline['open']:.2f} C:{kline['close']:.2f} H:{kline['high']:.2f} L:{kline['low']:.2f} V:{kline['volume']:.2f} 涨跌:{change:+.2f}%\n"
+    # 构建K线数据文本（包含EMA指标）
+    kline_text = f"【由远到近的10根{TRADE_CONFIG['timeframe']}K线数据（含EMA指标）】\n"
 
+    # 获取最近10根K线数据
+    klines = price_data['kline_data']
+    klines_count = len(klines)
 
-
-    # 构建技术指标文本
-    if len(price_history) >= 5:
-        closes = [data['price'] for data in price_history[-5:]]
-        sma_5 = sum(closes) / len(closes)
-        price_vs_sma = ((price_data['price'] - sma_5) / sma_5) * 100
-
-        indicator_text = f"【技术指标】\n5周期均价: {sma_5:.2f}\n当前价格相对于均线: {price_vs_sma:+.2f}%"
+    # 获取对应的EMA指标（如果有的话）
+    if historical_indicators and len(historical_indicators) >= klines_count:
+        # 使用最近计算的指标
+        recent_indicators = historical_indicators[-klines_count:]
     else:
-        indicator_text = "【技术指标】\n数据不足计算技术指标"
+        # 指标数据不足，创建空指标
+        recent_indicators = [None] * klines_count
 
+    for i, kline in enumerate(klines):
+        trend = "阳线" if kline['close'] > kline['open'] else "阴线"
+        change = ((kline['close'] - kline['open']) / kline['open']) * 100
+
+        # 基本K线信息
+        kline_info = f"K线{i + 1}: {trend} O:{kline['open']:.2f} C:{kline['close']:.2f} H:{kline['high']:.2f} L:{kline['low']:.2f} V:{kline['volume']:.2f} 涨跌:{change:+.2f}%"
+
+        # 添加EMA指标信息
+        indicator = recent_indicators[i]
+        if indicator and indicator['ema21'] and indicator['ema50']:
+            kline_info += f" | EMA21:{indicator['ema21']:.2f} EMA50:{indicator['ema50']:.2f}"
+        elif indicator and indicator['ema21']:
+            kline_info += f" | EMA21:{indicator['ema21']:.2f}"
+        else:
+            kline_info += " | EMA数据不足"
+
+        kline_text += kline_info + "\n"
+
+    # kline_text += f"【由远到近的10根{TRADE_CONFIG['high_timeframe']}K线数据】\n"
+    # for i, kline in enumerate(high_price_data['kline_data']):
+    #     trend = "阳线" if kline['close'] > kline['open'] else "阴线"
+    #     change = ((kline['close'] - kline['open']) / kline['open']) * 100
+    #     kline_text += f"K线{i + 1}: {trend} O:{kline['open']:.2f} C:{kline['close']:.2f} H:{kline['high']:.2f} L:{kline['low']:.2f} V:{kline['volume']:.2f} 涨跌:{change:+.2f}%\n"
+
+
+
+  
     # 添加上次交易信号
     signal_text = ""
     if signal_history:
@@ -212,8 +415,6 @@ def analyze_with_deepseek(price_data, high_price_data):
 
     {kline_text}
 
-    {indicator_text}
-
     {signal_text}
 
     【当前行情】
@@ -227,10 +428,10 @@ def analyze_with_deepseek(price_data, high_price_data):
 
     【分析要求】
     1. 基于{TRADE_CONFIG['timeframe']}K线趋势和技术指标给出交易信号: BUY(买入) / SELL(卖出) / HOLD(观望)
-    2. 简要分析理由（考虑趋势连续性、支撑阻力、成交量等因素）
-    3. 基于技术分析建议合理的止损价位
-    4. 基于技术分析建议合理的止盈价位
-    5. 评估信号信心程度
+    2. 简要分析理由（重点考虑EMA21和EMA50的关系、价格与EMA的位置、趋势连续性等）
+    3. 基于EMA指标和支撑阻力分析建议合理的止损价位
+    4. 基于EMA指标和阻力位分析建议合理的止盈价位
+    5. 评估信号信心程度（EMA指标信号强度作为重要参考）
 
     请用以下JSON格式回复：
     {{
@@ -264,7 +465,7 @@ def analyze_with_deepseek(price_data, high_price_data):
         
             signal_data = json.loads(json_str)
         else:
-            logging.info(f"无法解析JSON: {result}")
+            logger.info(f"无法解析JSON: {result}")
             return None
 
         # 保存信号到历史记录
@@ -276,8 +477,8 @@ def analyze_with_deepseek(price_data, high_price_data):
         return signal_data
 
     except Exception as e:
-        logging.error(f"DeepSeek分析失败，原始文本: {result}")
-        logging.exception(f"DeepSeek分析失败: {e}")
+        logger.error(f"DeepSeek分析失败，原始文本: {result}")
+        logger.exception(f"DeepSeek分析失败: {e}")
         return None
 
 
@@ -285,14 +486,14 @@ def execute_trade(signal_data, price_data):
     """执行交易（简化版）"""
     current_position = get_current_position()
 
-    logging.info(f"交易信号: {signal_data['signal']}")
-    logging.info(f"信心程度: {signal_data['confidence']}")
-    logging.info(f"止损价格: {signal_data['stop_loss']}")
-    logging.info(f"理由: {signal_data['reason']}")
-    logging.info(f"当前持仓: {current_position}")
+    logger.info(f"交易信号: {signal_data['signal']}")
+    logger.info(f"信心程度: {signal_data['confidence']}")
+    logger.info(f"止损价格: {signal_data['stop_loss']}")
+    logger.info(f"理由: {signal_data['reason']}")
+    logger.info(f"当前持仓: {current_position}")
 
     if TRADE_CONFIG['test_mode']:
-        logging.info("测试模式 - 仅模拟交易")
+        logger.info("测试模式 - 仅模拟交易")
         return
 
     try:
@@ -300,7 +501,7 @@ def execute_trade(signal_data, price_data):
         if signal_data['signal'] == 'BUY':
             if current_position and current_position['side'] == 'short':
                 # 平空仓
-                logging.info("平空仓...")
+                logger.info("平空仓...")
                 exchange.create_market_buy_order(
                     TRADE_CONFIG['symbol'],
                     current_position['size'],
@@ -308,7 +509,7 @@ def execute_trade(signal_data, price_data):
                 )
             elif not current_position or current_position['side'] == 'long':
                 # 开多仓或加多仓
-                logging.info("开多仓...")
+                logger.info("开多仓...")
                 exchange.create_market_buy_order(
                     TRADE_CONFIG['symbol'],
                     TRADE_CONFIG['amount'],
@@ -318,7 +519,7 @@ def execute_trade(signal_data, price_data):
         elif signal_data['signal'] == 'SELL':
             if current_position and current_position['side'] == 'long':
                 # 平多仓
-                logging.info("平多仓...")
+                logger.info("平多仓...")
                 exchange.create_market_sell_order(
                     TRADE_CONFIG['symbol'],
                     current_position['size'],
@@ -326,7 +527,7 @@ def execute_trade(signal_data, price_data):
                 )
             elif not current_position or current_position['side'] == 'short':
                 # 开空仓或加空仓
-                logging.info("开空仓...")
+                logger.info("开空仓...")
                 exchange.create_market_sell_order(
                     TRADE_CONFIG['symbol'],
                     TRADE_CONFIG['amount'],
@@ -334,24 +535,24 @@ def execute_trade(signal_data, price_data):
                 )
 
         elif signal_data['signal'] == 'HOLD':
-            logging.info("建议观望，不执行交易")
+            logger.info("建议观望，不执行交易")
             return
 
-        logging.info("订单执行成功")
+        logger.info("订单执行成功")
         time.sleep(2)
         position = get_current_position()
-        logging.info(f"更新后持仓: {position}")
+        logger.info(f"更新后持仓: {position}")
 
     except Exception as e:
-        logging.info(f"订单执行失败: {e}")
+        logger.info(f"订单执行失败: {e}")
         import traceback
         traceback.print_exc()
 
 def trading_bot():
     """主交易机器人函数"""
-    logging.info("\n" + "=" * 60)
-    logging.info(f"执行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logging.info("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info(f"执行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 60)
 
     # 1. 获取K线数据
     price_data = get_ohlcv(TRADE_CONFIG['timeframe'])
@@ -360,9 +561,25 @@ def trading_bot():
     if not price_data:
         return
 
-    logging.info(f"{TRADE_CONFIG['base_currency']}当前价格: ${price_data['price']:,.2f}")
-    logging.info(f"数据周期: {TRADE_CONFIG['timeframe']}")
-    logging.info(f"价格变化: {price_data['price_change']:+.2f}%")
+    logger.info(f"{TRADE_CONFIG['base_currency']}当前价格: ${price_data['price']:,.2f}")
+    logger.info(f"数据周期: {TRADE_CONFIG['timeframe']}")
+    logger.info(f"价格变化: {price_data['price_change']:+.2f}%")
+
+    # 计算并显示技术指标
+    indicators = get_technical_indicators(price_data)
+    if indicators:
+        if 'ema21' in indicators:
+            logger.info(f"EMA21: ${indicators['ema21']:.2f} (价格相对: {indicators['price_vs_ema21']:+.2f}%)")
+        if 'ema50' in indicators:
+            logger.info(f"EMA50: ${indicators['ema50']:.2f} (价格相对: {indicators['price_vs_ema50']:+.2f}%)")
+        if 'ema21_vs_ema50' in indicators:
+            if indicators['ema21_vs_ema50'] > 0:
+                trend = "看涨"
+            else:
+                trend = "看跌"
+            logger.info(f"EMA趋势: {trend} (EMA21相对EMA50: {indicators['ema21_vs_ema50']:+.2f}%)")
+    else:
+        logger.info("技术指标: 计算失败")
 
     # 2. 使用DeepSeek分析
     signal_data = analyze_with_deepseek(price_data, high_price_data)
@@ -375,38 +592,57 @@ def trading_bot():
 
 def main():
     """主函数"""
-    logging.info(f"{TRADE_CONFIG['symbol']}自动交易机器人启动成功！")
+    logger.info(f"{TRADE_CONFIG['symbol']}自动交易机器人启动成功！")
 
     if TRADE_CONFIG['test_mode']:
-        logging.info("当前为模拟模式，不会真实下单")
+        logger.info("当前为模拟模式，不会真实下单")
     else:
-        logging.info("实盘交易模式，请谨慎操作！")
+        logger.info("实盘交易模式，请谨慎操作！")
 
-    logging.info(f"交易周期: {TRADE_CONFIG['timeframe']}")
-    logging.info("已启用K线数据分析和持仓跟踪功能")
+    logger.info(f"交易周期: {TRADE_CONFIG['timeframe']}")
+    logger.info("已启用K线数据分析和持仓跟踪功能")
 
     # 设置交易所
     if not setup_exchange():
-        logging.info("交易所初始化失败，程序退出")
+        logger.info("交易所初始化失败，程序退出")
         return
+
+    # 初始化历史数据
+    if not initialize_historical_data():
+        logger.info("历史数据初始化失败，程序退出")
+        return
+
+    # 验证EMA指标计算
+    test_price_data = {'price': price_history[-1]['price'] if price_history else 0}
+    test_indicators = get_technical_indicators(test_price_data)
+    if test_indicators:
+        logger.info("EMA指标验证成功:")
+        if 'ema21' in test_indicators:
+            logger.info(f"  EMA21: ${test_indicators['ema21']:.2f}")
+        if 'ema50' in test_indicators:
+            logger.info(f"  EMA50: ${test_indicators['ema50']:.2f}")
+        if 'ema21_vs_ema50' in test_indicators:
+            logger.info(f"  EMA关系: {test_indicators['ema21_vs_ema50']:+.2f}%")
+    else:
+        logger.info("警告: EMA指标验证失败")
 
     # 根据时间周期设置执行频率
     if TRADE_CONFIG['timeframe'] == '1h':
         # 每小时执行一次，在整点后的1分钟执行
         schedule.every().hour.at(":01").do(trading_bot)
-        logging.info("执行频率: 每小时一次")
+        logger.info("执行频率: 每小时一次")
     elif TRADE_CONFIG['timeframe'] == '15m':
         # 每15分钟执行一次
         schedule.every(15).minutes.do(trading_bot)
-        logging.info("执行频率: 每15分钟一次")
+        logger.info("执行频率: 每15分钟一次")
     elif TRADE_CONFIG['timeframe'] == '5m':
         # 每15分钟执行一次
         schedule.every(5).minutes.do(trading_bot)
-        logging.info("执行频率: 每5分钟一次")
+        logger.info("执行频率: 每5分钟一次")
     else:
         # 默认1小时
         schedule.every().hour.at(":01").do(trading_bot)
-        logging.info("执行频率: 每小时一次")
+        logger.info("执行频率: 每小时一次")
 
     # 立即执行一次
     trading_bot()
