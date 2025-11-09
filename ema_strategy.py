@@ -95,13 +95,53 @@ def calculate_ema(prices, period):
     return ema
 
 
+def calculate_rsi(prices, period=9):
+    """
+    计算RSI相对强弱指标
+
+    Args:
+        prices: 价格列表
+        period: RSI周期，默认为9
+
+    Returns:
+        float: RSI值
+    """
+    if len(prices) < period + 1:
+        return None
+
+    # 计算价格变化
+    deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+
+    # 分离涨跌
+    gains = [delta if delta > 0 else 0 for delta in deltas]
+    losses = [-delta if delta < 0 else 0 for delta in deltas]
+
+    # 计算初始平均涨跌幅
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    # 使用平滑公式计算后续的平均涨跌幅
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+    # 计算RS和RSI
+    if avg_loss == 0:
+        return 100  # 没有跌幅，RSI为100
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+
 def get_technical_indicators(price_data, calculate_historical=False):
     """
-    计算技术指标（EMA21, EMA50）
+    计算技术指标（EMA21, EMA50, RSI9）
 
     Args:
         price_data: 当前价格数据或历史价格列表
-        calculate_historical: 是否计算历史K线的EMA指标
+        calculate_historical: 是否计算历史K线的技术指标
 
     Returns:
         dict or list: 技术指标数据
@@ -109,7 +149,7 @@ def get_technical_indicators(price_data, calculate_historical=False):
     indicators = {}
 
     if calculate_historical:
-        # 计算历史K线的EMA指标
+        # 计算历史K线的技术指标
         historical_indicators = []
 
         # 获取所有历史价格
@@ -117,12 +157,13 @@ def get_technical_indicators(price_data, calculate_historical=False):
         logger.info(f"计算历史指标，价格数据数量: {len(all_prices)}")
 
         if len(all_prices) >= 50:
-            # 为每根K线计算EMA指标
+            # 为每根K线计算技术指标
             for i in range(len(price_history)):
                 if i < 49:  # 前49根K线数据不足以计算EMA50
                     historical_indicators.append({
                         'ema21': None,
                         'ema50': None,
+                        'rsi9': None,
                         'price_vs_ema21': None,
                         'price_vs_ema50': None,
                         'ema21_vs_ema50': None
@@ -152,6 +193,13 @@ def get_technical_indicators(price_data, calculate_historical=False):
                         indicator['ema50'] = None
                         indicator['price_vs_ema50'] = None
 
+                    # 计算RSI9 (需要至少10个价格点)
+                    if len(prices_so_far) >= 10:
+                        rsi9 = calculate_rsi(prices_so_far, 9)
+                        indicator['rsi9'] = rsi9
+                    else:
+                        indicator['rsi9'] = None
+
                     # 计算EMA21和EMA50的相对位置
                     if ema21 and ema50:
                         indicator['ema21_vs_ema50'] = ((ema21 - ema50) / ema50) * 100
@@ -180,6 +228,11 @@ def get_technical_indicators(price_data, calculate_historical=False):
             if ema50:
                 indicators['ema50'] = ema50
                 indicators['price_vs_ema50'] = ((current_price - ema50) / ema50) * 100
+
+            # 计算RSI9
+            if len(closes) >= 10:  # 需要至少10个价格点计算RSI9
+                rsi9 = calculate_rsi(closes, 9)
+                indicators['rsi9'] = rsi9
 
             # 计算EMA21和EMA50的相对位置
             if ema21 and ema50:
@@ -380,14 +433,18 @@ def analyze_with_deepseek(price_data, high_price_data):
         # 基本K线信息
         kline_info = f"K线{i + 1}: {trend} O:{kline['open']:.2f} C:{kline['close']:.2f} H:{kline['high']:.2f} L:{kline['low']:.2f} V:{kline['volume']:.2f} 涨跌:{change:+.2f}%"
 
-        # 添加EMA指标信息
+        # 添加技术指标信息
         indicator = recent_indicators[i]
         if indicator and indicator['ema21'] and indicator['ema50']:
             kline_info += f" | EMA21:{indicator['ema21']:.2f} EMA50:{indicator['ema50']:.2f}"
+            if indicator.get('rsi9'):
+                kline_info += f" RSI9:{indicator['rsi9']:.2f}"
         elif indicator and indicator['ema21']:
             kline_info += f" | EMA21:{indicator['ema21']:.2f}"
+            if indicator.get('rsi9'):
+                kline_info += f" RSI9:{indicator['rsi9']:.2f}"
         else:
-            kline_info += " | EMA数据不足"
+            kline_info += " | 技术指标数据不足"
 
         kline_text += kline_info + "\n"
 
@@ -428,10 +485,10 @@ def analyze_with_deepseek(price_data, high_price_data):
 
     【分析要求】
     1. 基于{TRADE_CONFIG['timeframe']}K线趋势和技术指标给出交易信号: BUY(买入) / SELL(卖出) / HOLD(观望)
-    2. 简要分析理由（重点考虑EMA21和EMA50的关系、价格与EMA的位置、趋势连续性等）
-    3. 基于EMA指标和支撑阻力分析建议合理的止损价位
-    4. 基于EMA指标和阻力位分析建议合理的止盈价位
-    5. 评估信号信心程度（EMA指标信号强度作为重要参考）
+    2. 简要分析理由（重点考虑EMA21和EMA50的关系、价格与EMA的位置、RSI9的超买超卖状态、趋势连续性等）
+    3. 基于EMA指标、RSI指标和支撑阻力分析建议合理的止损价位
+    4. 基于EMA指标、RSI指标和阻力位分析建议合理的止盈价位
+    5. 评估信号信心程度（EMA和RSI指标信号强度作为重要参考，RSI>70为超买，RSI<30为超卖）
 
     请用以下JSON格式回复：
     {{
@@ -572,6 +629,13 @@ def trading_bot():
             logger.info(f"EMA21: ${indicators['ema21']:.2f} (价格相对: {indicators['price_vs_ema21']:+.2f}%)")
         if 'ema50' in indicators:
             logger.info(f"EMA50: ${indicators['ema50']:.2f} (价格相对: {indicators['price_vs_ema50']:+.2f}%)")
+        if 'rsi9' in indicators:
+            rsi_status = ""
+            if indicators['rsi9'] > 70:
+                rsi_status = " (超买)"
+            elif indicators['rsi9'] < 30:
+                rsi_status = " (超卖)"
+            logger.info(f"RSI9: {indicators['rsi9']:.2f}{rsi_status}")
         if 'ema21_vs_ema50' in indicators:
             if indicators['ema21_vs_ema50'] > 0:
                 trend = "看涨"
@@ -612,19 +676,21 @@ def main():
         logger.info("历史数据初始化失败，程序退出")
         return
 
-    # 验证EMA指标计算
+    # 验证技术指标计算
     test_price_data = {'price': price_history[-1]['price'] if price_history else 0}
     test_indicators = get_technical_indicators(test_price_data)
     if test_indicators:
-        logger.info("EMA指标验证成功:")
+        logger.info("技术指标验证成功:")
         if 'ema21' in test_indicators:
             logger.info(f"  EMA21: ${test_indicators['ema21']:.2f}")
         if 'ema50' in test_indicators:
             logger.info(f"  EMA50: ${test_indicators['ema50']:.2f}")
+        if 'rsi9' in test_indicators:
+            logger.info(f"  RSI9: {test_indicators['rsi9']:.2f}")
         if 'ema21_vs_ema50' in test_indicators:
             logger.info(f"  EMA关系: {test_indicators['ema21_vs_ema50']:+.2f}%")
     else:
-        logger.info("警告: EMA指标验证失败")
+        logger.info("警告: 技术指标验证失败")
 
     # 根据时间周期设置执行频率
     if TRADE_CONFIG['timeframe'] == '1h':
