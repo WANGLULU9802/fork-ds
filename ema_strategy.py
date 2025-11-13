@@ -460,7 +460,7 @@ def analyze_with_deepseek(price_data, high_price_data):
     position_text = "无持仓" if not current_pos else f"{current_pos['side']}仓, 数量: {current_pos['size']}, 盈亏: {current_pos['unrealized_pnl']:.2f}USDT"
 
     prompt = f"""
-    你是一个专业的加密货币交易分析师。请基于以下{TRADE_CONFIG['symbol']} {TRADE_CONFIG['timeframe']}周期数据进行分析：
+    你是一个专业的价格行为交易者。请基于以下{TRADE_CONFIG['symbol']} {TRADE_CONFIG['timeframe']}周期数据进行分析：
 
     {kline_text}
 
@@ -477,10 +477,10 @@ def analyze_with_deepseek(price_data, high_price_data):
 
     【分析要求】
     1. 基于Albrooks的价格行为分析方法和{TRADE_CONFIG['timeframe']}K线趋势和技术指标给出交易信号: BUY(买入) / SELL(卖出) / HOLD(观望)
-    2. 简要分析理由（重点考虑EMA21和EMA50的关系、价格与EMA的位置、RSI9的超买超卖状态、趋势连续性等）
+    2. 简要分析理由（重点考虑价格行为，EMA21和EMA50的关系、价格与EMA的位置）
     3. 基于EMA指标、RSI指标和支撑阻力分析建议合理的止损价位
     4. 基于EMA指标、RSI指标和阻力位分析建议合理的止盈价位
-    5. 评估信号信心程度（EMA和RSI指标信号强度作为重要参考，RSI>70为超买，RSI<30为超卖）
+    5. 评估信号信心程度
 
     请用以下JSON格式回复：
     {{
@@ -497,7 +497,7 @@ def analyze_with_deepseek(price_data, high_price_data):
             model="deepseek-chat",
             messages=[
                 {"role": "system",
-                 "content": f"您是一位急需资金为母亲治疗癌症的交易员，你现在非常非常非常需要从加密货币交易市场赚取足够的金额治疗你的母亲，专注于{TRADE_CONFIG['timeframe']}周期趋势分析。请结合K线形态和技术指标做出判断。"},
+                 "content": f"您是一位急需资金为母亲治疗癌症的交易员，你现在非常非常非常需要从加密货币交易市场赚取足够的金额治疗你的母亲，专注于{TRADE_CONFIG['timeframe']}周期趋势分析。请结合K线价格行为、技术指标做出判断。"},
                 {"role": "user", "content": prompt}
             ],
             stream=False
