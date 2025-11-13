@@ -448,14 +448,6 @@ def analyze_with_deepseek(price_data, high_price_data):
 
         kline_text += kline_info + "\n"
 
-    # kline_text += f"【由远到近的10根{TRADE_CONFIG['high_timeframe']}K线数据】\n"
-    # for i, kline in enumerate(high_price_data['kline_data']):
-    #     trend = "阳线" if kline['close'] > kline['open'] else "阴线"
-    #     change = ((kline['close'] - kline['open']) / kline['open']) * 100
-    #     kline_text += f"K线{i + 1}: {trend} O:{kline['open']:.2f} C:{kline['close']:.2f} H:{kline['high']:.2f} L:{kline['low']:.2f} V:{kline['volume']:.2f} 涨跌:{change:+.2f}%\n"
-
-
-
   
     # 添加上次交易信号
     signal_text = ""
@@ -484,7 +476,7 @@ def analyze_with_deepseek(price_data, high_price_data):
     - 当前持仓: {position_text}
 
     【分析要求】
-    1. 基于{TRADE_CONFIG['timeframe']}K线趋势和技术指标给出交易信号: BUY(买入) / SELL(卖出) / HOLD(观望)
+    1. 基于Albrooks的价格行为分析方法和{TRADE_CONFIG['timeframe']}K线趋势和技术指标给出交易信号: BUY(买入) / SELL(卖出) / HOLD(观望)
     2. 简要分析理由（重点考虑EMA21和EMA50的关系、价格与EMA的位置、RSI9的超买超卖状态、趋势连续性等）
     3. 基于EMA指标、RSI指标和支撑阻力分析建议合理的止损价位
     4. 基于EMA指标、RSI指标和阻力位分析建议合理的止盈价位
