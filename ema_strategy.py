@@ -246,7 +246,7 @@ def initialize_historical_data():
     global price_history
 
     try:
-        # 获取60根K线作为初始历史数据
+        # 获取110根K线作为初始历史数据（60根展示 + 50根用于计算EMA50）
         logger.info("开始初始化历史数据...")
         initial_data = get_ohlcv(TRADE_CONFIG['timeframe'], initialize=True)
 
@@ -307,9 +307,9 @@ def get_ohlcv(timeframe, initialize=False):
     try:
         # 根据是否为初始化模式决定获取的K线数量
         if initialize:
-            limit = 60  # 初始化时获取60根K线确保足够计算EMA
+            limit = 110  # 初始化时获取110根K线（60根展示 + 50根用于计算EMA50）
         else:
-            limit = 10  # 正常运行时获取10根K线
+            limit = 60  # 正常运行时获取60根K线用于分析
 
         # 添加网络请求重试机制
         max_retries = 3
@@ -412,9 +412,9 @@ def analyze_with_deepseek(price_data, high_price_data):
     historical_indicators = get_technical_indicators(None, calculate_historical=True)
 
     # 构建K线数据文本（包含EMA指标）
-    kline_text = f"【由远到近的10根{TRADE_CONFIG['timeframe']}K线数据（含EMA指标）】\n"
+    kline_text = f"【由远到近的60根{TRADE_CONFIG['timeframe']}K线数据（含EMA指标）】\n"
 
-    # 获取最近10根K线数据
+    # 获取最近60根K线数据
     klines = price_data['kline_data']
     klines_count = len(klines)
 
@@ -430,21 +430,22 @@ def analyze_with_deepseek(price_data, high_price_data):
         trend = "阳线" if kline['close'] > kline['open'] else "阴线"
         change = ((kline['close'] - kline['open']) / kline['open']) * 100
 
-        # 基本K线信息
-        kline_info = f"K线{i + 1}: {trend} O:{kline['open']:.2f} C:{kline['close']:.2f} H:{kline['high']:.2f} L:{kline['low']:.2f} V:{kline['volume']:.2f} 涨跌:{change:+.2f}%"
+        # K线信息（紧凑格式：趋势 开收高低 成交量 涨跌幅）
+        kline_info = f"K{i + 1}:{trend} {kline['open']:.1f}/{kline['close']:.1f} {kline['high']:.1f}/{kline['low']:.1f} V:{kline['volume']:.0f} {change:+.1f}%"
 
-        # 添加技术指标信息
+        # 技术指标（紧凑格式）
         indicator = recent_indicators[i]
         if indicator and indicator['ema21'] and indicator['ema50']:
-            kline_info += f" | EMA21:{indicator['ema21']:.2f} EMA50:{indicator['ema50']:.2f}"
+            ema_trend = "↑" if indicator['ema21'] > indicator['ema50'] else "↓"
+            kline_info += f" E21:{indicator['ema21']:.1f}{ema_trend}E50:{indicator['ema50']:.1f}"
             if indicator.get('rsi9'):
-                kline_info += f" RSI9:{indicator['rsi9']:.2f}"
+                rsi_signal = "超买" if indicator['rsi9'] > 70 else ("超卖" if indicator['rsi9'] < 30 else "")
+                kline_info += f" R9:{indicator['rsi9']:.0f}{rsi_signal}"
         elif indicator and indicator['ema21']:
-            kline_info += f" | EMA21:{indicator['ema21']:.2f}"
+            kline_info += f" E21:{indicator['ema21']:.1f}"
             if indicator.get('rsi9'):
-                kline_info += f" RSI9:{indicator['rsi9']:.2f}"
-        else:
-            kline_info += " | 技术指标数据不足"
+                rsi_signal = "超买" if indicator['rsi9'] > 70 else ("超卖" if indicator['rsi9'] < 30 else "")
+                kline_info += f" R9:{indicator['rsi9']:.0f}{rsi_signal}"
 
         kline_text += kline_info + "\n"
 
