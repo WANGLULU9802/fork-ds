@@ -56,7 +56,7 @@ TRADE_CONFIG = {
     'base_currency': 'SOL',
     'amount': 0.001,  # 交易数量 (本位币)
     'leverage': 10,  # 杠杆倍数
-    'timeframe': '15m',
+    'timeframe': '5m',
     'high_timeframe': '15m',
     'test_mode': True,  # 测试模式
 }
