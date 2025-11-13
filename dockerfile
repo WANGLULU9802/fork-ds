@@ -28,4 +28,4 @@ RUN pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 COPY ema_strategy.py .
 
 # 运行 Python 脚本
-CMD python -u ema_strategy.py & sleep 5 && tail -f /app/app.log
+CMD python -u ema_strategy.py
