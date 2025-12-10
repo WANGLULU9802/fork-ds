@@ -7,10 +7,18 @@ import json
 import logging
 from openai import OpenAI
 import time
+from config.logger_config import setup_logging
+from dotenv import load_dotenv
 
-# 设置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+load_dotenv()
+
+# 设置日志系统 - 支持同时输出到控制台和文件
+logger = setup_logging(
+    log_filename='app.log',
+    log_level=logging.INFO,
+    name='ema_strategy'
+)
+
 
 class ScalpingStrategy:
     def __init__(self, symbol='SOL/USDT', timeframe='5m', length=10):

@@ -10,7 +10,7 @@ import json
 from dotenv import load_dotenv
 import logging
 import re
-from logger_config import setup_logging
+from config.logger_config import setup_logging
 
 # 设置日志系统 - 支持同时输出到控制台和文件
 logger = setup_logging(
