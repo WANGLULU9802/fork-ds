@@ -20,6 +20,43 @@ def get_beijing_time():
     """获取东八区当前时间"""
     return datetime.now(beijing_tz)
 
+def is_5min_interval():
+    """检查当前时间是否是5分钟的整点"""
+    now = get_beijing_time()
+    minute = now.minute
+    second = now.second
+
+    # 检查是否是5分钟的整点（0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55）
+    # 并且秒数小于10，确保在整点附近执行
+    return minute % 5 == 0 and second < 10
+
+def wait_until_next_5min():
+    """等待到下一个5分钟整点"""
+    now = get_beijing_time()
+    minute = now.minute
+    second = now.second
+
+    # 计算到下一个5分钟整点需要等待的秒数
+    if minute % 5 == 0 and second < 10:
+        # 当前正好是5分钟整点，直接执行
+        wait_seconds = 0
+    else:
+        next_5min = ((minute // 5) + 1) * 5
+        if next_5min >= 60:
+            next_5min = 0
+            wait_seconds = (60 - minute) * 60 - second
+        else:
+            wait_seconds = (next_5min - minute) * 60 - second
+
+        if wait_seconds > 300:  # 防止等待时间过长
+            wait_seconds = 0
+
+    if wait_seconds > 0:
+        next_time = (now + timedelta(seconds=wait_seconds)).strftime('%Y-%m-%d %H:%M:%S')
+        logger.info(f"当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"等待到下一个5分钟整点（{next_time}），预计等待{wait_seconds}秒...")
+        time.sleep(wait_seconds)
+
 # 设置日志系统 - 支持同时输出到控制台和文件
 logger = setup_logging(
     log_filename='app.log',
@@ -67,7 +104,7 @@ class ScalpingStrategy:
         self.pivot_points = []
         self.labels = []
 
-    def fetch_ohlcv(self, limit=200):
+    def fetch_ohlcv(self, limit=50):
         """获取K线数据"""
         try:
             ohlcv = self.exchange.fetch_ohlcv(self.symbol, self.timeframe, limit=limit)
@@ -193,14 +230,14 @@ class ScalpingStrategy:
         Returns:
             dict: 包含所有必要数据的信息
         """
-        # 获取最近150根K线数据用于AI分析
-        recent_bars = df.iloc[max(0, current_bar_index-149):current_bar_index+1]
+        # 获取最近30根K线数据用于AI分析
+        recent_bars = df.iloc[max(0, current_bar_index-29):current_bar_index+1]
 
         # 获取最近5根K线内的标签信息
         recent_5_bars = df.iloc[max(0, current_bar_index-4):current_bar_index+1]
         recent_5_labels = recent_5_bars[recent_5_bars['label'].notna()]
 
-        # 获取所有标签信息（用于AI分析）
+        # 获取所有标签信息（用于AI分析）- 这30根K线内的所有标签
         all_labels = recent_bars[recent_bars['label'].notna()]
 
         # 准备给AI的数据
@@ -233,7 +270,7 @@ class ScalpingStrategy:
         labels = data_for_ai['labels']
 
         # 构建K线文本，包含技术指标
-        kline_text = f"最近150根{self.timeframe}K线数据及指标：\n"
+        kline_text = f"最近30根{self.timeframe}K线数据及指标：\n"
         for i, (_, bar) in enumerate(recent_bars.iterrows()):
             change = ((bar['close'] - bar['open']) / bar['open']) * 100
 
@@ -253,8 +290,8 @@ class ScalpingStrategy:
         # 构建标签信息
         label_text = "发现的标签信息：\n"
         for idx, label_bar in labels.iterrows():
-            # 计算这是第多少根K线（从最近150根的开始算起）
-            k_index = 150 - len(recent_bars) + recent_bars.index.get_loc(idx) + 1
+            # 计算这是第多少根K线（从最近30根的开始算起）
+            k_index = 30 - len(recent_bars) + recent_bars.index.get_loc(idx) + 1
             label_text += f"- K{k_index}: 标签 {label_bar['label']} 价格: {label_bar['label_value']:.2f}\n"
 
         # 特别标注最近5根K线内的标签
@@ -262,30 +299,28 @@ class ScalpingStrategy:
         if not recent_5_labels.empty:
             label_text += "\n最近5根K线内的标签（重点关注的信号）：\n"
             for idx, label_bar in recent_5_labels.iterrows():
-                k_index = 150 - len(recent_bars) + recent_bars.index.get_loc(idx) + 1
+                k_index = 30 - len(recent_bars) + recent_bars.index.get_loc(idx) + 1
                 label_text += f"- K{k_index}: 标签 {label_bar['label']} 价格: {label_bar['label_value']:.2f}\n"
 
         prompt = f"""
 你是一个专业的加密货币剥头皮交易员。
 
-【剥头皮策略规则】
-请严格按照以下策略规则进行分析：
+【剥头皮策略入场逻辑】
+重要：标签K本身不是入场K线，标签K后5根K线才是入场K线！
 
-做多条件：
-1. HL或LL标签出现（5K以内）
-2. 做多不能有长上引线
-3. 收盘要收在标签K最高点上面
-4. 止损在标签K最低点
-5. 盈亏比0.5:1
-6. 当K的大小大于ATR的两倍不要做
+做多入场逻辑：
+1. 出现HL或LL标签（5K以内）
+2. 标签K后5根K线中，有K线收盘价突破标签K最高点
+3. 该入场K线不能有长上引线
+4. 该入场K线大小不能超过ATR两倍
+5. 止损设在标签K最低点，盈亏比0.5:1
 
-做空条件：
-1. HH或LH标签出现（5K以内）
-2. 做空不能有长下引线
-3. 收盘要收在标签K最低点下面
-4. 止损在标签K最高点
-5. 盈亏比0.5:1
-6. 当K的大小大于ATR的两倍不要做
+做空入场逻辑：
+1. 出现HH或LH标签（5K以内）
+2. 标签K后5根K线中，有K线收盘价跌破标签K最低点
+3. 该入场K线不能有长下引线
+4. 该入场K线大小不能超过ATR两倍
+5. 止损设在标签K最高点，盈亏比0.5:1
 
 【市场数据】
 交易对: {self.symbol}
@@ -304,36 +339,44 @@ class ScalpingStrategy:
 5. 趋势通道和交易区间
 6. 动能反转信号
 
-基于剥头皮策略规则，判断：
-1. 当前是否有符合做多/做空条件的信号？
-2. 最近5根K线内是否有标签出现？（重点：只有最近5K内的标签才有效）
-3. 当前K线是否有长引线（做多不能有长上引线，做空不能有长下引线）？
-4. 收盘价是否突破标签K的关键点位？
-5. 当前K线大小是否超过ATR两倍？
+【分析要点】
+请按以下顺序分析：
+1. 找到最近5根K线内的标签（HH/LH/HL/LL）
+2. 检查标签K后5根K线是否有符合条件的收盘价突破
+3. 验证入场K线的引线大小和K线实体大小
+4. 计算止损位和风险回报比
+
+【关键判断】
+- 标签K后5根K线内是否有符合条件的入场信号？
+- 入场K线是否满足引线大小和ATR要求？
+- 当前时机是否符合0.5:1的盈亏比要求？
 
 【重要提醒】
-- 只有最近5根K线内出现的标签才符合剥头皮策略的时间要求
-- 如果最近5K内没有标签，则当前没有符合条件的交易信号
-- 请重点关注"最近5根K线内的标签"部分
+- 标签K本身不能入场，必须等标签后5根K线
+- 只有最近5根K线内的标签才考虑，超出时间的不做分析
+- 入场K线收盘价必须突破标签K的关键价位
+- 严格遵守引线大小和ATR过滤条件
 
 请用以下JSON格式回复：
 {{
     "recommendation": "BUY|SELL|SKIP|WAIT",
     "confidence": "HIGH|MEDIUM|LOW",
-    "reason": "详细分析理由，说明是否符合剥头皮策略规则",
+    "reason": "详细分析理由，说明标签K后5根K线内是否有符合条件的入场信号",
     "signal_details": {{
         "direction": "BUY|SELL|NONE",
         "label_type": "HL|LL|HH|LH|NONE",
-        "label_found": true/false,
-        "entry_price": "建议入场价格",
-        "stop_loss": "止损价格",
-        "take_profit": "止盈价格",
-        "risk_reward_ratio": "0.5:1"
+        "label_k_position": "标签K的位置",
+        "entry_k_position": "入场K的位置",
+        "entry_price": "入场K收盘价",
+        "stop_loss": "标签K止损位",
+        "take_profit": "止盈位",
+        "time_since_label": "标签后入场间隔",
+        "entry_bar_valid": "入场K是否符合要求"
     }},
     "risk_assessment": "风险评估",
     "market_context": "市场背景分析",
-    "timing_assessment": "入场时机评估",
-    "label_analysis": "标签分析（是否在5K以内，是否符合条件）"
+    "entry_logic": "入场逻辑分析（重点说明标签K后5根K线的突破）",
+    "label_timing": "标签时间有效性（5K内）"
 }}
 """
 
@@ -370,7 +413,7 @@ class ScalpingStrategy:
             logger.error("无法获取K线数据")
             return
 
-        logger.info(f"获取到 {len(df)} 根K线数据")
+        logger.info(f"获取到 {len(df)} 根K线数据，用于计算转折点和标签")
 
         # 计算转折点
         df = self.calculate_pivots(df)
@@ -416,15 +459,24 @@ def main():
 
     current_time = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
     logger.info(f"=== 剥头皮策略启动（东八区时间：{current_time}）===")
-    logger.info("策略将收集150根K线数据和指标，交给AI进行信号判断")
+    logger.info("策略将收集30根K线数据和指标，交给AI进行信号判断")
     logger.info("AI将根据以下规则判断：")
     logger.info("- 做多：HL/LL标签出现，无长上引线，收盘突破标签最高点")
     logger.info("- 做空：HH/LH标签出现，无长下引线，收盘跌破标签最低点")
     logger.info("- 盈亏比：0.5:1")
     logger.info("- K线大小不超过ATR两倍")
 
+    logger.info("策略将在5分钟整点自动运行分析（如: 04:00, 04:05, 04:10等）")
+
     while True:
         try:
+            # 等待到下一个5分钟整点
+            wait_until_next_5min()
+
+            # 在5分钟整点执行分析
+            current_time = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+            logger.info(f"=== 开始5分钟整点分析（{current_time}） ===")
+
             result = strategy.run_analysis()
 
             if result and result['recommendation'] in ['BUY', 'SELL']:
@@ -438,16 +490,17 @@ def main():
                     logger.info(f"止盈: {signal_details.get('take_profit')}")
             elif result and result['recommendation'] in ['SKIP', 'WAIT']:
                 logger.info("AI建议等待更好的机会")
+            elif result is None:
+                logger.info("当前没有符合条件的交易机会")
 
-            # 每5分钟检查一次
-            logger.info("等待5分钟...")
-            time.sleep(300)
+            logger.info(f"=== 分析完成，等待下一个5分钟整点 ===")
 
         except KeyboardInterrupt:
             logger.info("策略停止")
             break
         except Exception as e:
             logger.error(f"策略运行出错: {e}")
+            logger.info("出错后等待1分钟再重试...")
             time.sleep(60)  # 出错后等待1分钟再重试
 
 if __name__ == "__main__":
