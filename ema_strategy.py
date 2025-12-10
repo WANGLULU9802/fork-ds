@@ -56,7 +56,7 @@ TRADE_CONFIG = {
     'base_currency': 'SOL',
     'amount': 0.001,  # 交易数量 (本位币)
     'leverage': 10,  # 杠杆倍数
-    'timeframe': '15m',
+    'timeframe': '5m',
     'high_timeframe': '15m',
     'test_mode': True,  # 测试模式
 }
@@ -246,7 +246,7 @@ def initialize_historical_data():
     global price_history
 
     try:
-        # 获取60根K线作为初始历史数据
+        # 获取110根K线作为初始历史数据（60根展示 + 50根用于计算EMA50）
         logger.info("开始初始化历史数据...")
         initial_data = get_ohlcv(TRADE_CONFIG['timeframe'], initialize=True)
 
@@ -307,9 +307,9 @@ def get_ohlcv(timeframe, initialize=False):
     try:
         # 根据是否为初始化模式决定获取的K线数量
         if initialize:
-            limit = 60  # 初始化时获取60根K线确保足够计算EMA
+            limit = 110  # 初始化时获取110根K线（60根展示 + 50根用于计算EMA50）
         else:
-            limit = 10  # 正常运行时获取10根K线
+            limit = 60  # 正常运行时获取60根K线用于分析
 
         # 添加网络请求重试机制
         max_retries = 3
@@ -412,9 +412,9 @@ def analyze_with_deepseek(price_data, high_price_data):
     historical_indicators = get_technical_indicators(None, calculate_historical=True)
 
     # 构建K线数据文本（包含EMA指标）
-    kline_text = f"【由远到近的10根{TRADE_CONFIG['timeframe']}K线数据（含EMA指标）】\n"
+    kline_text = f"【由远到近的60根{TRADE_CONFIG['timeframe']}K线数据（含EMA指标）】\n"
 
-    # 获取最近10根K线数据
+    # 获取最近60根K线数据
     klines = price_data['kline_data']
     klines_count = len(klines)
 
@@ -430,31 +430,24 @@ def analyze_with_deepseek(price_data, high_price_data):
         trend = "阳线" if kline['close'] > kline['open'] else "阴线"
         change = ((kline['close'] - kline['open']) / kline['open']) * 100
 
-        # 基本K线信息
-        kline_info = f"K线{i + 1}: {trend} O:{kline['open']:.2f} C:{kline['close']:.2f} H:{kline['high']:.2f} L:{kline['low']:.2f} V:{kline['volume']:.2f} 涨跌:{change:+.2f}%"
+        # K线信息（紧凑格式：趋势 开收高低 成交量 涨跌幅）
+        kline_info = f"K{i + 1}:{trend} {kline['open']:.1f}/{kline['close']:.1f} {kline['high']:.1f}/{kline['low']:.1f} V:{kline['volume']:.0f} {change:+.1f}%"
 
-        # 添加技术指标信息
+        # 技术指标（紧凑格式）
         indicator = recent_indicators[i]
         if indicator and indicator['ema21'] and indicator['ema50']:
-            kline_info += f" | EMA21:{indicator['ema21']:.2f} EMA50:{indicator['ema50']:.2f}"
+            ema_trend = "↑" if indicator['ema21'] > indicator['ema50'] else "↓"
+            kline_info += f" E21:{indicator['ema21']:.1f}{ema_trend}E50:{indicator['ema50']:.1f}"
             if indicator.get('rsi9'):
-                kline_info += f" RSI9:{indicator['rsi9']:.2f}"
+                rsi_signal = "超买" if indicator['rsi9'] > 70 else ("超卖" if indicator['rsi9'] < 30 else "")
+                kline_info += f" R9:{indicator['rsi9']:.0f}{rsi_signal}"
         elif indicator and indicator['ema21']:
-            kline_info += f" | EMA21:{indicator['ema21']:.2f}"
+            kline_info += f" E21:{indicator['ema21']:.1f}"
             if indicator.get('rsi9'):
-                kline_info += f" RSI9:{indicator['rsi9']:.2f}"
-        else:
-            kline_info += " | 技术指标数据不足"
+                rsi_signal = "超买" if indicator['rsi9'] > 70 else ("超卖" if indicator['rsi9'] < 30 else "")
+                kline_info += f" R9:{indicator['rsi9']:.0f}{rsi_signal}"
 
         kline_text += kline_info + "\n"
-
-    # kline_text += f"【由远到近的10根{TRADE_CONFIG['high_timeframe']}K线数据】\n"
-    # for i, kline in enumerate(high_price_data['kline_data']):
-    #     trend = "阳线" if kline['close'] > kline['open'] else "阴线"
-    #     change = ((kline['close'] - kline['open']) / kline['open']) * 100
-    #     kline_text += f"K线{i + 1}: {trend} O:{kline['open']:.2f} C:{kline['close']:.2f} H:{kline['high']:.2f} L:{kline['low']:.2f} V:{kline['volume']:.2f} 涨跌:{change:+.2f}%\n"
-
-
 
   
     # 添加上次交易信号
@@ -468,7 +461,7 @@ def analyze_with_deepseek(price_data, high_price_data):
     position_text = "无持仓" if not current_pos else f"{current_pos['side']}仓, 数量: {current_pos['size']}, 盈亏: {current_pos['unrealized_pnl']:.2f}USDT"
 
     prompt = f"""
-    你是一个专业的加密货币交易分析师。请基于以下{TRADE_CONFIG['symbol']} {TRADE_CONFIG['timeframe']}周期数据进行分析：
+    你是一个专业的价格行为交易者。请基于以下{TRADE_CONFIG['symbol']} {TRADE_CONFIG['timeframe']}周期数据进行分析：
 
     {kline_text}
 
@@ -484,11 +477,11 @@ def analyze_with_deepseek(price_data, high_price_data):
     - 当前持仓: {position_text}
 
     【分析要求】
-    1. 基于{TRADE_CONFIG['timeframe']}K线趋势和技术指标给出交易信号: BUY(买入) / SELL(卖出) / HOLD(观望)
-    2. 简要分析理由（重点考虑EMA21和EMA50的关系、价格与EMA的位置、RSI9的超买超卖状态、趋势连续性等）
+    1. 基于Albrooks的价格行为分析方法和{TRADE_CONFIG['timeframe']}K线趋势和技术指标给出交易信号: BUY(买入) / SELL(卖出) / HOLD(观望)
+    2. 简要分析理由（重点考虑价格行为，EMA21和EMA50的关系、价格与EMA的位置）
     3. 基于EMA指标、RSI指标和支撑阻力分析建议合理的止损价位
     4. 基于EMA指标、RSI指标和阻力位分析建议合理的止盈价位
-    5. 评估信号信心程度（EMA和RSI指标信号强度作为重要参考，RSI>70为超买，RSI<30为超卖）
+    5. 评估信号信心程度
 
     请用以下JSON格式回复：
     {{
@@ -505,7 +498,7 @@ def analyze_with_deepseek(price_data, high_price_data):
             model="deepseek-chat",
             messages=[
                 {"role": "system",
-                 "content": f"您是一位急需资金为母亲治疗癌症的交易员，你现在非常非常非常需要从加密货币交易市场赚取足够的金额治疗你的母亲，专注于{TRADE_CONFIG['timeframe']}周期趋势分析。请结合K线形态和技术指标做出判断。"},
+                 "content": f"您是一位急需资金为母亲治疗癌症的交易员，你现在非常非常非常需要从加密货币交易市场赚取足够的金额治疗你的母亲，专注于{TRADE_CONFIG['timeframe']}周期趋势分析。请结合K线价格行为、技术指标做出判断。"},
                 {"role": "user", "content": prompt}
             ],
             stream=False
