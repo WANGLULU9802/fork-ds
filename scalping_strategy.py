@@ -9,8 +9,16 @@ from openai import OpenAI
 import time
 from config.logger_config import setup_logging
 from dotenv import load_dotenv
+import pytz
 
 load_dotenv()
+
+# 东八区时区
+beijing_tz = pytz.timezone('Asia/Shanghai')
+
+def get_beijing_time():
+    """获取东八区当前时间"""
+    return datetime.now(beijing_tz)
 
 # 设置日志系统 - 支持同时输出到控制台和文件
 logger = setup_logging(
@@ -64,7 +72,8 @@ class ScalpingStrategy:
         try:
             ohlcv = self.exchange.fetch_ohlcv(self.symbol, self.timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            # 转换为东八区时间
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms') + pd.Timedelta(hours=8)
             return df
         except Exception as e:
             logger.error(f"获取K线数据失败: {e}")
@@ -96,6 +105,24 @@ class ScalpingStrategy:
             if df.iloc[i]['low'] == df.iloc[i-self.length:i+self.length+1]['low'].min():
                 df.loc[i, 'pl'] = 1
                 df.loc[i, 'pivot_low'] = df.iloc[i]['low']
+
+        # 对于最近的K线，使用可用的数据进行转折点计算
+        for i in range(len(df) - self.length, len(df)):
+            # 计算实际可用的范围
+            start_idx = max(0, i - self.length)
+            end_idx = min(len(df) - 1, i + self.length)
+
+            # 只有当有足够的数据时才进行计算
+            if end_idx - start_idx >= self.length:
+                # 检查是否为高点转折
+                if df.iloc[i]['high'] == df.iloc[start_idx:end_idx+1]['high'].max():
+                    df.loc[i, 'ph'] = 1
+                    df.loc[i, 'pivot_high'] = df.iloc[i]['high']
+
+                # 检查是否为低点转折
+                if df.iloc[i]['low'] == df.iloc[start_idx:end_idx+1]['low'].min():
+                    df.loc[i, 'pl'] = 1
+                    df.loc[i, 'pivot_low'] = df.iloc[i]['low']
 
         return df
 
@@ -156,214 +183,157 @@ class ScalpingStrategy:
 
     def check_entry_conditions(self, df, current_bar_index):
         """
-        检查入场条件（包含做多和做空）
-
-        做多规则：
-        1. HL/LL标签出现
-        2. 标签后5根K内收盘大于标签K的最高价
-        3. 入场K大小 < ATR的两倍
-        4. 止损在标签K最低价
-        5. 盈亏比0.5:1
-
-        做空规则：
-        1. HH/LH标签出现
-        2. 标签后5根K内收盘小于标签K的最低价
-        3. 入场K大小 < ATR的两倍
-        4. 止损在标签K最高价
-        5. 盈亏比0.5:1
+        简化的入场条件检查 - 只收集数据给AI分析
+        不再进行手动信号判断，完全交给AI处理
 
         Args:
             df: 完整的K线数据
             current_bar_index: 当前K线索引
 
         Returns:
-            list: 入场信号列表
+            dict: 包含所有必要数据的信息
         """
-        signals = []
+        # 获取最近150根K线数据用于AI分析
+        recent_bars = df.iloc[max(0, current_bar_index-149):current_bar_index+1]
 
-        # 获取最近的标签（最近20根K线内）
-        recent_bars = df.iloc[max(0, current_bar_index-20):current_bar_index+1]
-        label_bars = recent_bars[recent_bars['label'].notna()]
+        # 获取最近5根K线内的标签信息
+        recent_5_bars = df.iloc[max(0, current_bar_index-4):current_bar_index+1]
+        recent_5_labels = recent_5_bars[recent_5_bars['label'].notna()]
 
-        for _, label_bar in label_bars.iterrows():
-            label = label_bar['label']
-            label_index = label_bar.name
-            label_high = label_bar['high'] if not pd.isna(label_bar['pivot_high']) else label_bar['label_value']
-            label_low = label_bar['low'] if not pd.isna(label_bar['pivot_low']) else label_bar['label_value']
+        # 获取所有标签信息（用于AI分析）
+        all_labels = recent_bars[recent_bars['label'].notna()]
 
-            # 检查做多条件：HL或LL标签 + 向上突破
-            if label in ['HL', 'LL']:
-                # 检查标签后5根K线内是否有收盘价突破标签最高价
-                bars_after_label = df.iloc[label_index+1:min(label_index+6, current_bar_index+1)]
+        # 准备给AI的数据
+        data_for_ai = {
+            'df': recent_bars,
+            'labels': all_labels,
+            'recent_5_labels': recent_5_labels,
+            'current_index': current_bar_index,
+            'has_labels': len(recent_5_labels) > 0  # 只检查最近5根K线是否有标签
+        }
 
-                for i, bar in bars_after_label.iterrows():
-                    if bar['close'] > label_high:
-                        # 这是潜在的做多入场K
-                        entry_bar = bar
-                        entry_index = i
+        return data_for_ai
 
-                        # 条件3: 入场K的大小要小于ATR的两倍
-                        atr_at_entry = df.iloc[entry_index]['atr']
-                        entry_bar_range = entry_bar['high'] - entry_bar['low']
-
-                        if not pd.isna(atr_at_entry) and entry_bar_range <= atr_at_entry * 2:
-                            # 计算止损和止盈
-                            stop_loss = label_low  # 止损在标签K最低价
-                            risk = entry_bar['close'] - stop_loss
-                            take_profit = entry_bar['close'] + risk * 0.5  # 0.5:1盈亏比
-
-                            signal = {
-                                'direction': 'BUY',
-                                'label_type': label,
-                                'label_index': label_index,
-                                'label_high': label_high,
-                                'label_low': label_low,
-                                'entry_index': entry_index,
-                                'entry_price': entry_bar['close'],
-                                'entry_time': entry_bar['timestamp'],
-                                'stop_loss': stop_loss,
-                                'take_profit': take_profit,
-                                'risk': risk,
-                                'reward': risk * 0.5,
-                                'atr_at_entry': atr_at_entry,
-                                'entry_bar_range': entry_bar_range,
-                                'bars_since_label': entry_index - label_index
-                            }
-                            signals.append(signal)
-
-            # 检查做空条件：HH或LH标签 + 向下突破
-            elif label in ['HH', 'LH']:
-                # 检查标签后5根K线内是否有收盘价跌破标签最低价
-                bars_after_label = df.iloc[label_index+1:min(label_index+6, current_bar_index+1)]
-
-                for i, bar in bars_after_label.iterrows():
-                    if bar['close'] < label_low:
-                        # 这是潜在的做空入场K
-                        entry_bar = bar
-                        entry_index = i
-
-                        # 条件3: 入场K的大小要小于ATR的两倍
-                        atr_at_entry = df.iloc[entry_index]['atr']
-                        entry_bar_range = entry_bar['high'] - entry_bar['low']
-
-                        if not pd.isna(atr_at_entry) and entry_bar_range <= atr_at_entry * 2:
-                            # 计算止损和止盈（做空逻辑相反）
-                            stop_loss = label_high  # 止损在标签K最高价
-                            risk = stop_loss - entry_bar['close']  # 做空风险是止损减去入场价
-                            take_profit = entry_bar['close'] - risk * 0.5  # 0.5:1盈亏比
-
-                            signal = {
-                                'direction': 'SELL',
-                                'label_type': label,
-                                'label_index': label_index,
-                                'label_high': label_high,
-                                'label_low': label_low,
-                                'entry_index': entry_index,
-                                'entry_price': entry_bar['close'],
-                                'entry_time': entry_bar['timestamp'],
-                                'stop_loss': stop_loss,
-                                'take_profit': take_profit,
-                                'risk': risk,
-                                'reward': risk * 0.5,
-                                'atr_at_entry': atr_at_entry,
-                                'entry_bar_range': entry_bar_range,
-                                'bars_since_label': entry_index - label_index
-                            }
-                            signals.append(signal)
-
-        return signals
-
-    def analyze_with_ai(self, signal_data, df):
+    def analyze_with_ai(self, data_for_ai, df):
         """
-        使用AI分析交易信号
+        使用AI分析市场数据和剥头皮策略机会
 
         Args:
-            signal_data: 交易信号数据
+            data_for_ai: 包含K线数据和标签信息的数据
             df: 完整的K线数据
 
         Returns:
             dict: AI分析结果
         """
-        if not signal_data:
+        if not data_for_ai['has_labels']:
+            logger.info("最近5根K线内没有发现标签，不进行AI分析，等待信号出现")
             return None
 
-        signal = signal_data[0]  # 取最新信号
+        recent_bars = data_for_ai['df']
+        labels = data_for_ai['labels']
 
-        # 获取最近150根K线数据用于分析
-        recent_bars = df.iloc[max(0, signal['entry_index']-149):signal['entry_index']+1]
-
-        # 构建K线文本
-        kline_text = f"最近150根{self.timeframe}K线数据：\n"
+        # 构建K线文本，包含技术指标
+        kline_text = f"最近150根{self.timeframe}K线数据及指标：\n"
         for i, (_, bar) in enumerate(recent_bars.iterrows()):
-            trend = "阳线" if bar['close'] > bar['open'] else "阴线"
             change = ((bar['close'] - bar['open']) / bar['open']) * 100
-            kline_text += f"K{i+1}: {trend} O:{bar['open']:.2f} C:{bar['close']:.2f} H:{bar['high']:.2f} L:{bar['low']:.2f} V:{bar['volume']:.0f} 涨跌:{change:+.2f}%\n"
 
-        # 根据信号方向调整分析重点
-        if signal['direction'] == 'BUY':
-            signal_type = "做多"
-            breakdown_direction = "向上突破"
-            key_level = "阻力位"
-            system_focus = "寻找反弹机会，关注支撑位和多头动能"
-        else:  # SELL
-            signal_type = "做空"
-            breakdown_direction = "向下突破"
-            key_level = "支撑位"
-            system_focus = "寻找下跌机会，关注阻力位和空头动能"
+            # 获取ATR值
+            atr = bar['atr'] if 'atr' in bar and not pd.isna(bar['atr']) else 0
+
+            # 获取EMA20值
+            ema20 = bar['close'] * 0.9 if 'ema20' not in bar else bar['ema20']
+
+            # 检查是否有标签
+            label_info = ""
+            if not pd.isna(bar['label']):
+                label_info = f" 标签:{bar['label']}"
+
+            kline_text += f"K{i+1}: O:{bar['open']:.2f} C:{bar['close']:.2f} H:{bar['high']:.2f} L:{bar['low']:.2f} V:{bar['volume']:.0f} 涨跌:{change:+.2f}% EMA20:{ema20:.2f} ATR:{atr:.4f}{label_info}\n"
+
+        # 构建标签信息
+        label_text = "发现的标签信息：\n"
+        for idx, label_bar in labels.iterrows():
+            # 计算这是第多少根K线（从最近150根的开始算起）
+            k_index = 150 - len(recent_bars) + recent_bars.index.get_loc(idx) + 1
+            label_text += f"- K{k_index}: 标签 {label_bar['label']} 价格: {label_bar['label_value']:.2f}\n"
+
+        # 特别标注最近5根K线内的标签
+        recent_5_labels = data_for_ai['recent_5_labels']
+        if not recent_5_labels.empty:
+            label_text += "\n最近5根K线内的标签（重点关注的信号）：\n"
+            for idx, label_bar in recent_5_labels.iterrows():
+                k_index = 150 - len(recent_bars) + recent_bars.index.get_loc(idx) + 1
+                label_text += f"- K{k_index}: 标签 {label_bar['label']} 价格: {label_bar['label_value']:.2f}\n"
 
         prompt = f"""
 你是一个专业的加密货币剥头皮交易员。
-请基于以下{self.symbol} {self.timeframe}数据进行分析：
-识别给出的K线中各种K线形态、楔形和其它三段式回调、三角形、双顶，双底，双底牛旗/双顶熊旗、楔形顶/底作为第二个顶/底的双顶/底、双底/顶回调、双头肩顶/底、杯柄底、第一次均线缺口/20缺口K线/移动平均线缺口/k线BODY缺口以及其它各种缺口和测量距离、微型通道、宽幅趋势通道和常见的趋势形态、窄幅交易区间、识别动能反转的标志、掌握鼎峰反转/主要趋势反转/楔形和其它三浪推进反转模式/扩张三角形等各种反转模式、能动态解析识别趋势动能和反转动能以及市场多空力量（以上称为各种价格结构），实时提供精准的入场建议
 
-【技术指标数据】
+【剥头皮策略规则】
+请严格按照以下策略规则进行分析：
+
+做多条件：
+1. HL或LL标签出现（5K以内）
+2. 做多不能有长上引线
+3. 收盘要收在标签K最高点上面
+4. 止损在标签K最低点
+5. 盈亏比0.5:1
+6. 当K的大小大于ATR的两倍不要做
+
+做空条件：
+1. HH或LH标签出现（5K以内）
+2. 做空不能有长下引线
+3. 收盘要收在标签K最低点下面
+4. 止损在标签K最高点
+5. 盈亏比0.5:1
+6. 当K的大小大于ATR的两倍不要做
+
+【市场数据】
+交易对: {self.symbol}
+时间周期: {self.timeframe}
+
 {kline_text}
 
-【{signal_type}交易信号详情】
-- 信号方向: {signal['direction']} ({signal_type})
-- 标签类型: {signal['label_type']}
-- 标签出现时间: {df.iloc[signal['label_index']]['timestamp']}
-- 标签高点: ${signal['label_high']:.2f}
-- 标签低点: ${signal['label_low']:.2f}
-- 入场时间: {signal['entry_time']}
-- 入场价格: ${signal['entry_price']:.2f}
-- 止损价格: ${signal['stop_loss']:.2f}
-- 止盈价格: ${signal['take_profit']:.2f}
-- 风险: ${signal['risk']:.2f}
-- 回报: ${signal['reward']:.2f}
-- 当前ATR: ${signal['atr_at_entry']:.2f}
-- 入场K振幅: ${signal['entry_bar_range']:.2f} (ATR的{signal['entry_bar_range']/signal['atr_at_entry']*100:.1f}%)
-- 标签后入场间隔: {signal['bars_since_label']}根K线
-- 突破方式: {breakdown_direction}
+{label_text}
 
-【{signal_type}分析重点】
-{signal_type}信号逻辑分析：
-1. {signal['label_type']}标签表明市场出现了{signal_type}前的反转结构
-2. 当前价格{breakdown_direction}标签关键{key_level}
-3. 风险控制设在标签的相反端，盈亏比为0.5:1的剥头皮策略
+【分析任务】
+请分析以上K线数据，识别各种价格结构：
+1. K线形态（锤子线、十字星、吞没形态等）
+2. 反转形态（双顶/底、头肩形、楔形等）
+3. 持续形态（三角形、旗形、矩形等）
+4. 缺口和测量距离
+5. 趋势通道和交易区间
+6. 动能反转信号
 
-【分析要求】
-1. 评估这个{signal_type}剥头皮信号的可靠性
-2. 分析{breakdown_direction}的力度和市场情绪
-3. 考虑{key_level}的有效性和后续走势
-4. 评估当前波动率和时机选择
-5. 判断短期动能是否支持{signal_type}方向
-6. 给出是否建议入场的最终判断
+基于剥头皮策略规则，判断：
+1. 当前是否有符合做多/做空条件的信号？
+2. 最近5根K线内是否有标签出现？（重点：只有最近5K内的标签才有效）
+3. 当前K线是否有长引线（做多不能有长上引线，做空不能有长下引线）？
+4. 收盘价是否突破标签K的关键点位？
+5. 当前K线大小是否超过ATR两倍？
 
-【特别提醒】
-- 这是剥头皮策略，重点关注短期价格行为
-- 盈亏比较低(0.5:1)，需要高胜率来盈利
-- 入场时机和突破质量比长期趋势更重要
+【重要提醒】
+- 只有最近5根K线内出现的标签才符合剥头皮策略的时间要求
+- 如果最近5K内没有标签，则当前没有符合条件的交易信号
+- 请重点关注"最近5根K线内的标签"部分
 
 请用以下JSON格式回复：
 {{
-    "recommendation": "ENTER|SKIP|WAIT",
+    "recommendation": "BUY|SELL|SKIP|WAIT",
     "confidence": "HIGH|MEDIUM|LOW",
-    "reason": "详细分析理由（重点说明{signal_type}逻辑）",
-    "risk_assessment": "风险评估（{signal_type}特定风险）",
+    "reason": "详细分析理由，说明是否符合剥头皮策略规则",
+    "signal_details": {{
+        "direction": "BUY|SELL|NONE",
+        "label_type": "HL|LL|HH|LH|NONE",
+        "label_found": true/false,
+        "entry_price": "建议入场价格",
+        "stop_loss": "止损价格",
+        "take_profit": "止盈价格",
+        "risk_reward_ratio": "0.5:1"
+    }},
+    "risk_assessment": "风险评估",
     "market_context": "市场背景分析",
-    "breakdown_quality": "突破质量评估",
-    "timing_assessment": "入场时机评估"
+    "timing_assessment": "入场时机评估",
+    "label_analysis": "标签分析（是否在5K以内，是否符合条件）"
 }}
 """
 
@@ -391,7 +361,7 @@ class ScalpingStrategy:
             return None
 
     def run_analysis(self):
-        """运行完整的策略分析"""
+        """运行简化的策略分析"""
         logger.info(f"开始分析 {self.symbol} {self.timeframe} 剥头皮策略")
 
         # 获取K线数据
@@ -411,49 +381,63 @@ class ScalpingStrategy:
         # 识别转折点序列并标记
         df, pivots = self.identify_pivot_sequence(df)
 
-        # 检查入场条件
+        # 获取数据给AI分析
         current_index = len(df) - 1  # 当前最新K线
-        signals = self.check_entry_conditions(df, current_index)
+        data_for_ai = self.check_entry_conditions(df, current_index)
 
-        if signals:
-            logger.info(f"发现 {len(signals)} 个交易信号")
+        # 始终调用AI进行分析，让AI判断是否有信号
+        ai_result = self.analyze_with_ai(data_for_ai, df)
 
-            # 使用AI分析最新信号
-            ai_result = self.analyze_with_ai(signals, df)
+        if ai_result:
+            current_time = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+            logger.info("=== AI分析结果 ===")
+            logger.info(f"分析时间（东八区）: {current_time}")
+            logger.info(f"建议: {ai_result['recommendation']}")
+            logger.info(f"信心: {ai_result['confidence']}")
+            logger.info(f"理由: {ai_result['reason']}")
+            if ai_result.get('label_analysis'):
+                logger.info(f"标签分析: {ai_result['label_analysis']}")
 
-            if ai_result:
-                logger.info("=== AI分析结果 ===")
-                logger.info(f"建议: {ai_result['recommendation']}")
-                logger.info(f"信心: {ai_result['confidence']}")
-                logger.info(f"理由: {ai_result['reason']}")
-                logger.info(f"风险评估: {ai_result['risk_assessment']}")
-                logger.info(f"市场背景: {ai_result['market_context']}")
-
-                return {
-                    'signal': signals[0],
-                    'ai_analysis': ai_result,
-                    'recommendation': ai_result['recommendation']
-                }
-        else:
-            logger.info("当前没有符合条件的交易信号")
+            return {
+                'data_for_ai': data_for_ai,
+                'ai_analysis': ai_result,
+                'recommendation': ai_result['recommendation']
+            }
 
         return None
 
 def main():
     """主函数"""
     strategy = ScalpingStrategy(
-        symbol='SOL/USDT',
+        symbol='SOL/USDC',
         timeframe='5m',
         length=10
     )
+
+    current_time = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+    logger.info(f"=== 剥头皮策略启动（东八区时间：{current_time}）===")
+    logger.info("策略将收集150根K线数据和指标，交给AI进行信号判断")
+    logger.info("AI将根据以下规则判断：")
+    logger.info("- 做多：HL/LL标签出现，无长上引线，收盘突破标签最高点")
+    logger.info("- 做空：HH/LH标签出现，无长下引线，收盘跌破标签最低点")
+    logger.info("- 盈亏比：0.5:1")
+    logger.info("- K线大小不超过ATR两倍")
 
     while True:
         try:
             result = strategy.run_analysis()
 
-            if result and result['recommendation'] == 'ENTER':
+            if result and result['recommendation'] in ['BUY', 'SELL']:
                 logger.info("🚨 AI建议入场！")
                 # 这里可以添加实际的交易执行逻辑
+                signal_details = result['ai_analysis'].get('signal_details', {})
+                if signal_details:
+                    logger.info(f"方向: {signal_details.get('direction')}")
+                    logger.info(f"入场价: {signal_details.get('entry_price')}")
+                    logger.info(f"止损: {signal_details.get('stop_loss')}")
+                    logger.info(f"止盈: {signal_details.get('take_profit')}")
+            elif result and result['recommendation'] in ['SKIP', 'WAIT']:
+                logger.info("AI建议等待更好的机会")
 
             # 每5分钟检查一次
             logger.info("等待5分钟...")
