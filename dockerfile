@@ -25,7 +25,7 @@ COPY .env .
 RUN pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 复制应用文件
-COPY ema_strategy.py .
+COPY scalping_strategy.py .
 
 # 运行 Python 脚本
-CMD python -u ema_strategy.py & sleep 5 && tail -f /app/app.log
+CMD python -u scalping_strategy.py & sleep 5 && tail -f /app/app.log
