@@ -289,11 +289,11 @@ class ScalpingStrategy:
 
         signal = signal_data[0]  # 取最新信号
 
-        # 获取最近10根K线数据用于分析
-        recent_bars = df.iloc[max(0, signal['entry_index']-9):signal['entry_index']+1]
+        # 获取最近150根K线数据用于分析
+        recent_bars = df.iloc[max(0, signal['entry_index']-149):signal['entry_index']+1]
 
         # 构建K线文本
-        kline_text = f"最近10根{self.timeframe}K线数据：\n"
+        kline_text = f"最近150根{self.timeframe}K线数据：\n"
         for i, (_, bar) in enumerate(recent_bars.iterrows()):
             trend = "阳线" if bar['close'] > bar['open'] else "阴线"
             change = ((bar['close'] - bar['open']) / bar['open']) * 100
