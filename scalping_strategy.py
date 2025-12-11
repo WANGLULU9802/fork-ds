@@ -233,9 +233,9 @@ class ScalpingStrategy:
         # 获取最近30根K线数据用于AI分析
         recent_bars = df.iloc[max(0, current_bar_index-29):current_bar_index+1]
 
-        # 获取最近5根K线内的标签信息
-        recent_5_bars = df.iloc[max(0, current_bar_index-4):current_bar_index+1]
-        recent_5_labels = recent_5_bars[recent_5_bars['label'].notna()]
+        # 获取最近6根K线内的标签信息
+        recent_6_bars = df.iloc[max(0, current_bar_index-5):current_bar_index+1]
+        recent_6_labels = recent_6_bars[recent_6_bars['label'].notna()]
 
         # 获取所有标签信息（用于AI分析）- 这30根K线内的所有标签
         all_labels = recent_bars[recent_bars['label'].notna()]
@@ -244,9 +244,9 @@ class ScalpingStrategy:
         data_for_ai = {
             'df': recent_bars,
             'labels': all_labels,
-            'recent_5_labels': recent_5_labels,
+            'recent_6_labels': recent_6_labels,
             'current_index': current_bar_index,
-            'has_labels': len(recent_5_labels) > 0  # 只检查最近5根K线是否有标签
+            'has_labels': len(recent_6_labels) > 0  # 只检查最近6根K线是否有标签
         }
 
         return data_for_ai
@@ -263,7 +263,7 @@ class ScalpingStrategy:
             dict: AI分析结果
         """
         if not data_for_ai['has_labels']:
-            logger.info("最近5根K线内没有发现标签，不进行AI分析，等待信号出现")
+            logger.info("最近6根K线内没有发现标签，不进行AI分析，等待信号出现")
             return None
 
         recent_bars = data_for_ai['df']
@@ -294,11 +294,11 @@ class ScalpingStrategy:
             k_index = 30 - len(recent_bars) + recent_bars.index.get_loc(idx) + 1
             label_text += f"- K{k_index}: 标签 {label_bar['label']} 价格: {label_bar['label_value']:.2f}\n"
 
-        # 特别标注最近5根K线内的标签
-        recent_5_labels = data_for_ai['recent_5_labels']
-        if not recent_5_labels.empty:
-            label_text += "\n最近5根K线内的标签（重点关注的信号）：\n"
-            for idx, label_bar in recent_5_labels.iterrows():
+        # 特别标注最近6根K线内的标签
+        recent_6_labels = data_for_ai['recent_6_labels']
+        if not recent_6_labels.empty:
+            label_text += "\n最近6根K线内的标签（重点关注的信号）：\n"
+            for idx, label_bar in recent_6_labels.iterrows():
                 k_index = 30 - len(recent_bars) + recent_bars.index.get_loc(idx) + 1
                 label_text += f"- K{k_index}: 标签 {label_bar['label']} 价格: {label_bar['label_value']:.2f}\n"
 
@@ -309,14 +309,14 @@ class ScalpingStrategy:
 重要：标签K本身不是入场K线，标签K后5根K线才是入场K线！
 
 做多入场逻辑：
-1. 出现HL或LL标签（5K以内）
+1. 出现HL或LL标签（6K以内）
 2. 标签K后5根K线中，有K线收盘价突破标签K最高点
 3. 该入场K线不能有长上引线
 4. 该入场K线大小不能超过ATR两倍
 5. 止损设在标签K最低点，盈亏比0.5:1
 
 做空入场逻辑：
-1. 出现HH或LH标签（5K以内）
+1. 出现HH或LH标签（6K以内）
 2. 标签K后5根K线中，有K线收盘价跌破标签K最低点
 3. 该入场K线不能有长下引线
 4. 该入场K线大小不能超过ATR两倍
@@ -341,7 +341,7 @@ class ScalpingStrategy:
 
 【分析要点】
 请按以下顺序分析：
-1. 找到最近5根K线内的标签（HH/LH/HL/LL）
+1. 找到最近6根K线内的标签（HH/LH/HL/LL）
 2. 检查标签K后5根K线是否有符合条件的收盘价突破
 3. 验证入场K线的引线大小和K线实体大小
 4. 计算止损位和风险回报比
@@ -353,7 +353,7 @@ class ScalpingStrategy:
 
 【重要提醒】
 - 标签K本身不能入场，必须等标签后5根K线
-- 只有最近5根K线内的标签才考虑，超出时间的不做分析
+- 只有最近6根K线内的标签才考虑，超出时间的不做分析
 - 入场K线收盘价必须突破标签K的关键价位
 - 严格遵守引线大小和ATR过滤条件
 
@@ -376,7 +376,7 @@ class ScalpingStrategy:
     "risk_assessment": "风险评估",
     "market_context": "市场背景分析",
     "entry_logic": "入场逻辑分析（重点说明标签K后5根K线的突破）",
-    "label_timing": "标签时间有效性（5K内）"
+    "label_timing": "标签时间有效性（6K内）"
 }}
 """
 
