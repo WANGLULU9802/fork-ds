@@ -266,7 +266,12 @@ class ScalpingStrategy:
             logger.info("最近6根K线内没有发现标签，不进行AI分析，等待信号出现")
             return None
 
+        # 检查最后一根K线是否有标签，如果有则不进行分析
         recent_bars = data_for_ai['df']
+        last_bar = recent_bars.iloc[-1]
+        if not pd.isna(last_bar['label']):
+            logger.info(f"最后一根K线有标签 {last_bar['label']}，不进行AI分析，等待后续K线")
+            return None
         labels = data_for_ai['labels']
 
         # 构建K线文本，包含技术指标
