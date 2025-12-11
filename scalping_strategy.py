@@ -220,8 +220,7 @@ class ScalpingStrategy:
 
     def check_entry_conditions(self, df, current_bar_index):
         """
-        简化的入场条件检查 - 只收集数据给AI分析
-        不再进行手动信号判断，完全交给AI处理
+        入场条件检查 - 先用代码判断价格突破，再收集数据给AI进行形态分析
 
         Args:
             df: 完整的K线数据
@@ -240,20 +239,155 @@ class ScalpingStrategy:
         # 获取所有标签信息（用于AI分析）- 这30根K线内的所有标签
         all_labels = recent_bars[recent_bars['label'].notna()]
 
+        # 代码实现：检查价格突破条件
+        price_breakthrough = self.check_price_breakthrough(df, current_bar_index)
+
         # 准备给AI的数据
         data_for_ai = {
             'df': recent_bars,
             'labels': all_labels,
             'recent_6_labels': recent_6_labels,
             'current_index': current_bar_index,
-            'has_labels': len(recent_6_labels) > 0  # 只检查最近6根K线是否有标签
+            'has_labels': len(recent_6_labels) > 0,  # 只检查最近6根K线是否有标签
+            'price_breakthrough': price_breakthrough  # 添加价格突破判断结果
         }
 
         return data_for_ai
 
+    def check_price_breakthrough(self, df, current_bar_index):
+        """
+        用代码判断价格是否突破标签高低点
+
+        Args:
+            df: 完整的K线数据
+            current_bar_index: 当前K线索引
+
+        Returns:
+            dict: 价格突破判断结果
+        """
+        # 获取最近6根K线内的标签
+        start_idx = max(0, current_bar_index - 5)
+        recent_6_bars = df.iloc[start_idx:current_bar_index+1]
+        recent_6_labels = recent_6_bars[recent_6_bars['label'].notna()]
+
+        if recent_6_labels.empty:
+            return {
+                'has_breakthrough': False,
+                'direction': None,
+                'label_info': None,
+                'entry_bar_info': None
+            }
+
+        # 检查每个标签后的5根K线是否有突破
+        for _, label_bar in recent_6_labels.iterrows():
+            label_idx = label_bar.name
+            label_type = label_bar['label']
+
+            # 确定检查范围（标签后5根K线）
+            check_start = label_idx + 1
+            check_end = min(label_idx + 6, current_bar_index + 1)
+
+            if check_start >= len(df):
+                continue
+
+            # 检查范围内的每根K线
+            for entry_idx in range(check_start, check_end):
+                entry_bar = df.iloc[entry_idx]
+
+                # 计算ATR（用于K线大小过滤）
+                atr_period = 14
+                atr_start = max(0, entry_idx - atr_period + 1)
+                atr_data = df.iloc[atr_start:entry_idx+1]
+                if len(atr_data) < atr_period:
+                    continue
+
+                # 计算ATR
+                atr = self.calculate_simple_atr(atr_data)
+
+                # 计算K线实体大小
+                bar_size = abs(entry_bar['close'] - entry_bar['open'])
+
+                # 检查K线大小是否超过ATR两倍
+                if bar_size > 2 * atr:
+                    continue
+
+                # 检查引线大小
+                upper_shadow = entry_bar['high'] - max(entry_bar['open'], entry_bar['close'])
+                lower_shadow = min(entry_bar['open'], entry_bar['close']) - entry_bar['low']
+
+                # 做多条件：HL或LL标签，收盘价突破标签最高点，无长上引线
+                if label_type in ['HL', 'LL']:
+                    if entry_bar['close'] > label_bar['label_value']:
+                        # 检查上引线是否过大（上引线不超过实体的50%）
+                        body_size = abs(entry_bar['close'] - entry_bar['open'])
+                        if upper_shadow <= body_size * 0.5:
+                            return {
+                                'has_breakthrough': True,
+                                'direction': 'BUY',
+                                'label_info': {
+                                    'label_type': label_type,
+                                    'label_price': label_bar['label_value'],
+                                    'label_index': label_idx,
+                                    'stop_loss': label_bar['low']  # 止损设在标签K最低点
+                                },
+                                'entry_bar_info': {
+                                    'entry_price': entry_bar['close'],
+                                    'entry_index': entry_idx,
+                                    'bar_size': bar_size,
+                                    'atr': atr,
+                                    'upper_shadow': upper_shadow,
+                                    'lower_shadow': lower_shadow
+                                }
+                            }
+
+                # 做空条件：HH或LH标签，收盘价跌破标签最低点，无长下引线
+                elif label_type in ['HH', 'LH']:
+                    if entry_bar['close'] < label_bar['label_value']:
+                        # 检查下引线是否过大（下引线不超过实体的50%）
+                        body_size = abs(entry_bar['close'] - entry_bar['open'])
+                        if lower_shadow <= body_size * 0.5:
+                            return {
+                                'has_breakthrough': True,
+                                'direction': 'SELL',
+                                'label_info': {
+                                    'label_type': label_type,
+                                    'label_price': label_bar['label_value'],
+                                    'label_index': label_idx,
+                                    'stop_loss': label_bar['high']  # 止损设在标签K最高点
+                                },
+                                'entry_bar_info': {
+                                    'entry_price': entry_bar['close'],
+                                    'entry_index': entry_idx,
+                                    'bar_size': bar_size,
+                                    'atr': atr,
+                                    'upper_shadow': upper_shadow,
+                                    'lower_shadow': lower_shadow
+                                }
+                            }
+
+        return {
+            'has_breakthrough': False,
+            'direction': None,
+            'label_info': None,
+            'entry_bar_info': None
+        }
+
+    def calculate_simple_atr(self, df, period=14):
+        """计算简单的ATR"""
+        if len(df) < period:
+            return 0
+
+        df = df.copy()
+        df['high_low'] = df['high'] - df['low']
+        df['high_close_prev'] = abs(df['high'] - df['close'].shift(1))
+        df['low_close_prev'] = abs(df['low'] - df['close'].shift(1))
+
+        df['tr'] = df[['high_low', 'high_close_prev', 'low_close_prev']].max(axis=1)
+        return df['tr'].mean()
+
     def analyze_with_ai(self, data_for_ai, df):
         """
-        使用AI分析市场数据和剥头皮策略机会
+        使用AI分析K线形态（价格突破已由代码判断）
 
         Args:
             data_for_ai: 包含K线数据和标签信息的数据
@@ -262,8 +396,9 @@ class ScalpingStrategy:
         Returns:
             dict: AI分析结果
         """
-        if not data_for_ai['has_labels']:
-            logger.info("最近6根K线内没有发现标签，不进行AI分析，等待信号出现")
+        # 检查是否有价格突破
+        if not data_for_ai['price_breakthrough']['has_breakthrough']:
+            logger.info("代码检查：没有符合条件的价格突破，不进行AI分析")
             return None
 
         # 检查最后一根K线是否有标签，如果有则不进行分析
@@ -272,7 +407,12 @@ class ScalpingStrategy:
         if not pd.isna(last_bar['label']):
             logger.info(f"最后一根K线有标签 {last_bar['label']}，不进行AI分析，等待后续K线")
             return None
-        labels = data_for_ai['labels']
+
+        # 获取价格突破信息
+        breakthrough = data_for_ai['price_breakthrough']
+        direction = breakthrough['direction']
+        label_info = breakthrough['label_info']
+        entry_info = breakthrough['entry_bar_info']
 
         # 构建K线文本，包含技术指标
         kline_text = f"最近30根{self.timeframe}K线数据及指标：\n"
@@ -286,102 +426,91 @@ class ScalpingStrategy:
             ema20 = bar['close'] * 0.9 if 'ema20' not in bar else bar['ema20']
 
             # 检查是否有标签
-            label_info = ""
+            label_info_text = ""
             if not pd.isna(bar['label']):
-                label_info = f" 标签:{bar['label']}"
+                label_info_text = f" 标签:{bar['label']}"
 
-            kline_text += f"K{i+1}: O:{bar['open']:.2f} C:{bar['close']:.2f} H:{bar['high']:.2f} L:{bar['low']:.2f} V:{bar['volume']:.0f} 涨跌:{change:+.2f}% EMA20:{ema20:.2f} ATR:{atr:.4f}{label_info}\n"
+            # 标记入场K线
+            entry_mark = ""
+            if entry_info and i == recent_bars.index.get_loc(entry_info['entry_index']):
+                entry_mark = " [入场K]"
+
+            kline_text += f"K{i+1}: O:{bar['open']:.2f} C:{bar['close']:.2f} H:{bar['high']:.2f} L:{bar['low']:.2f} V:{bar['volume']:.0f} 涨跌:{change:+.2f}% EMA20:{ema20:.2f} ATR:{atr:.4f}{label_info_text}{entry_mark}\n"
 
         # 构建标签信息
+        labels = data_for_ai['labels']
         label_text = "发现的标签信息：\n"
         for idx, label_bar in labels.iterrows():
             # 计算这是第多少根K线（从最近30根的开始算起）
             k_index = 30 - len(recent_bars) + recent_bars.index.get_loc(idx) + 1
             label_text += f"- K{k_index}: 标签 {label_bar['label']} 价格: {label_bar['label_value']:.2f}\n"
 
-        # 特别标注最近6根K线内的标签
-        recent_6_labels = data_for_ai['recent_6_labels']
-        if not recent_6_labels.empty:
-            label_text += "\n最近6根K线内的标签（重点关注的信号）：\n"
-            for idx, label_bar in recent_6_labels.iterrows():
-                k_index = 30 - len(recent_bars) + recent_bars.index.get_loc(idx) + 1
-                label_text += f"- K{k_index}: 标签 {label_bar['label']} 价格: {label_bar['label_value']:.2f}\n"
-
         prompt = f"""
-你是一个专业的加密货币剥头皮交易员。
-
-【剥头皮策略入场逻辑】
-重要：标签K本身不是入场K线，标签K后5根K线才是入场K线！
-
-做多入场逻辑：
-1. 出现HL或LL标签（6K以内）
-2. 标签K后5根K线中，有K线收盘价突破标签K最高点
-3. 该入场K线不能有长上引线
-4. 该入场K线大小不能超过ATR两倍
-5. 止损设在标签K最低点，盈亏比0.5:1
-
-做空入场逻辑：
-1. 出现HH或LH标签（6K以内）
-2. 标签K后5根K线中，有K线收盘价跌破标签K最低点
-3. 该入场K线不能有长下引线
-4. 该入场K线大小不能超过ATR两倍
-5. 止损设在标签K最高点，盈亏比0.5:1
+你是一个专业的加密货币剥头皮交易员，专注于K线形态分析。
 
 【市场数据】
 交易对: {self.symbol}
 时间周期: {self.timeframe}
+
+【代码已确认的价格突破信息】
+方向: {direction}
+标签类型: {label_info['label_type']}
+标签价格: {label_info['label_price']:.2f}
+入场价格: {entry_info['entry_price']:.2f}
+止损位: {label_info['stop_loss']:.2f}
+K线大小: {entry_info['bar_size']:.4f}
+ATR: {entry_info['atr']:.4f}
 
 {kline_text}
 
 {label_text}
 
 【分析任务】
-请分析以上K线数据，识别各种价格结构：
-1. K线形态（锤子线、十字星、吞没形态等）
-2. 反转形态（双顶/底、头肩形、楔形等）
+代码已经确认价格突破条件满足，现在需要你分析K线形态来确认交易信号的可靠性。
+
+请识别并分析以下形态：
+1. K线形态（锤子线、十字星、吞没形态、流星线等）
+2. 反转形态（双顶/底、头肩形、楔形、V形反转等）
 3. 持续形态（三角形、旗形、矩形等）
-4. 缺口和测量距离
-5. 趋势通道和交易区间
-6. 动能反转信号
+4. 缺口和测量距离（突破缺口、衰竭缺口等）
+5. 趋势通道和交易区间（上升趋势线、下降趋势线、支撑阻力位等）
+6. 动能反转信号（背离、超买超卖反转等）
 
 【分析要点】
-请按以下顺序分析：
-1. 找到最近6根K线内的标签（HH/LH/HL/LL）
-2. 检查标签K后5根K线是否有符合条件的收盘价突破
-3. 验证入场K线的引线大小和K线实体大小
-4. 计算止损位和风险回报比
+1. 入场K线的形态是否支持突破方向？
+2. 突破前的K线组合是否形成反转或持续形态？
+3. 是否存在确认信号（如多个看涨/看跌形态组合）？
+4. 当前价格位置是否处于关键的技术位？
+5. 成交量是否支持突破的有效性？
 
-【关键判断】
-- 标签K后5根K线内是否有符合条件的入场信号？
-- 入场K线是否满足引线大小和ATR要求？
-- 当前时机是否符合0.5:1的盈亏比要求？
+【风险评估】
+1. 形态的可靠性程度
+2. 假突破的可能性
+3. 市场整体趋势的方向性
+4. 潜在的风险因素
 
-【重要提醒】
-- 标签K本身不能入场，必须等标签后5根K线
-- 只有最近6根K线内的标签才考虑，超出时间的不做分析
-- 入场K线收盘价必须突破标签K的关键价位
-- 严格遵守引线大小和ATR过滤条件
-
-请用以下JSON格式回复：
+请基于形态分析判断是否应该入场，用以下JSON格式回复：
 {{
     "recommendation": "BUY|SELL|SKIP|WAIT",
     "confidence": "HIGH|MEDIUM|LOW",
-    "reason": "详细分析理由，说明标签K后5根K线内是否有符合条件的入场信号",
-    "signal_details": {{
-        "direction": "BUY|SELL|NONE",
-        "label_type": "HL|LL|HH|LH|NONE",
-        "label_k_position": "标签K的位置",
-        "entry_k_position": "入场K的位置",
-        "entry_price": "入场K收盘价",
-        "stop_loss": "标签K止损位",
-        "take_profit": "止盈位",
-        "time_since_label": "标签后入场间隔",
-        "entry_bar_valid": "入场K是否符合要求"
+    "reason": "基于K线形态的详细分析理由",
+    "pattern_analysis": {{
+        "entry_bar_pattern": "入场K线的具体形态",
+        "preceding_patterns": "突破前的关键形态组合",
+        "confirmation_signals": "确认信号列表",
+        "reversal_or_continuation": "反转或持续形态判断",
+        "volume_analysis": "成交量分析"
     }},
-    "risk_assessment": "风险评估",
-    "market_context": "市场背景分析",
-    "entry_logic": "入场逻辑分析（重点说明标签K后5根K线的突破）",
-    "label_timing": "标签时间有效性（6K内）"
+    "signal_details": {{
+        "direction": "{direction}",
+        "entry_price": {entry_info['entry_price']},
+        "stop_loss": {label_info['stop_loss']},
+        "take_profit": "止盈位（0.5:1盈亏比）",
+        "pattern_strength": "形态强度评估"
+    }},
+    "risk_assessment": "基于形态的风险评估",
+    "market_context": "市场背景和整体趋势分析",
+    "overall_signal_quality": "综合信号质量评分（1-10）"
 }}
 """
 
@@ -413,7 +542,7 @@ class ScalpingStrategy:
         logger.info(f"开始分析 {self.symbol} {self.timeframe} 剥头皮策略")
 
         # 获取K线数据
-        df = self.fetch_ohlcv(200)
+        df = self.fetch_ohlcv(50)
         if df is None:
             logger.error("无法获取K线数据")
             return
@@ -438,18 +567,34 @@ class ScalpingStrategy:
 
         if ai_result:
             current_time = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
-            logger.info("=== AI分析结果 ===")
+            logger.info("=== AI形态分析结果 ===")
             logger.info(f"分析时间（东八区）: {current_time}")
             logger.info(f"建议: {ai_result['recommendation']}")
             logger.info(f"信心: {ai_result['confidence']}")
             logger.info(f"理由: {ai_result['reason']}")
-            if ai_result.get('label_analysis'):
-                logger.info(f"标签分析: {ai_result['label_analysis']}")
+
+            # 输出形态分析
+            if 'pattern_analysis' in ai_result:
+                pattern = ai_result['pattern_analysis']
+                logger.info(f"入场K线形态: {pattern.get('entry_bar_pattern', 'N/A')}")
+                logger.info(f"突破前形态: {pattern.get('preceding_patterns', 'N/A')}")
+                logger.info(f"形态强度: {ai_result['signal_details'].get('pattern_strength', 'N/A')}")
+                logger.info(f"信号质量评分: {ai_result.get('overall_signal_quality', 'N/A')}/10")
+
+            # 输出价格突破信息（由代码判断）
+            breakthrough = data_for_ai['price_breakthrough']
+            if breakthrough['has_breakthrough']:
+                logger.info("=== 代码确认的价格突破 ===")
+                logger.info(f"突破方向: {breakthrough['direction']}")
+                logger.info(f"标签: {breakthrough['label_info']['label_type']} @ {breakthrough['label_info']['label_price']:.2f}")
+                logger.info(f"入场价: {breakthrough['entry_bar_info']['entry_price']:.2f}")
+                logger.info(f"止损: {breakthrough['label_info']['stop_loss']:.2f}")
 
             return {
                 'data_for_ai': data_for_ai,
                 'ai_analysis': ai_result,
-                'recommendation': ai_result['recommendation']
+                'recommendation': ai_result['recommendation'],
+                'price_breakthrough': breakthrough
             }
 
         return None
@@ -472,6 +617,7 @@ def main():
     logger.info("- K线大小不超过ATR两倍")
 
     logger.info("策略将在5分钟整点自动运行分析（如: 04:00, 04:05, 04:10等）")
+    logger.info("策略已更新：价格突破由代码判断，AI专注形态分析")
 
     while True:
         try:
@@ -484,19 +630,33 @@ def main():
 
             result = strategy.run_analysis()
 
-            if result and result['recommendation'] in ['BUY', 'SELL']:
-                logger.info("🚨 AI建议入场！")
-                # 这里可以添加实际的交易执行逻辑
-                signal_details = result['ai_analysis'].get('signal_details', {})
-                if signal_details:
-                    logger.info(f"方向: {signal_details.get('direction')}")
-                    logger.info(f"入场价: {signal_details.get('entry_price')}")
-                    logger.info(f"止损: {signal_details.get('stop_loss')}")
-                    logger.info(f"止盈: {signal_details.get('take_profit')}")
-            elif result and result['recommendation'] in ['SKIP', 'WAIT']:
-                logger.info("AI建议等待更好的机会")
-            elif result is None:
-                logger.info("当前没有符合条件的交易机会")
+            if result:
+                # 有价格突破且AI分析完成
+                if result['recommendation'] in ['BUY', 'SELL']:
+                    logger.info("🚨 代码确认突破 + AI形态确认！建议入场！")
+                    breakthrough = result['price_breakthrough']
+                    signal_details = result['ai_analysis'].get('signal_details', {})
+
+                    # 输出交易详情
+                    logger.info(f"交易方向: {breakthrough['direction']}")
+                    logger.info(f"入场价格: {breakthrough['entry_bar_info']['entry_price']:.2f}")
+                    logger.info(f"止损价格: {breakthrough['label_info']['stop_loss']:.2f}")
+
+                    # 计算止盈位（0.5:1盈亏比）
+                    risk = abs(breakthrough['entry_bar_info']['entry_price'] - breakthrough['label_info']['stop_loss'])
+                    if breakthrough['direction'] == 'BUY':
+                        take_profit = breakthrough['entry_bar_info']['entry_price'] + risk * 0.5
+                    else:
+                        take_profit = breakthrough['entry_bar_info']['entry_price'] - risk * 0.5
+                    logger.info(f"止盈价格: {take_profit:.2f}")
+
+                    # 这里可以添加实际的交易执行逻辑
+
+                elif result['recommendation'] in ['SKIP', 'WAIT']:
+                    logger.info("AI基于形态分析建议等待更好的机会")
+            else:
+                # 没有价格突破或没有AI分析
+                logger.info("当前没有符合条件的交易机会（价格突破条件未满足）")
 
             logger.info(f"=== 分析完成，等待下一个5分钟整点 ===")
 
